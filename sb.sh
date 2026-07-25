@@ -3,15 +3,15 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.6'
+SCRIPT_VERSION='v26.7.25-fork.7'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
-FORK_BRANCH="${SBYG_CHANNEL:-main}"
-FORK_RAW="https://raw.githubusercontent.com/${FORK_OWNER}/${FORK_REPO}/${FORK_BRANCH}"
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
 STATE_FILE="$STATE_DIR/protocols.json"
 CONFIG_FILE="$STATE_DIR/sb.json"
 SERVICE_NAME=sing-box
+FORK_BRANCH=
+FORK_RAW=
 
 # Keep this block and DEPENDENCY_LOCKS.md in sync when refreshing a dependency.
 SB_DEFAULT=1.13.14
@@ -50,12 +50,58 @@ red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
 yellow(){ printf '\033[33;1m%s\033[0m\n' "$*"; }
 blue(){ printf '\033[36;1m%s\033[0m\n' "$*"; }
+dim(){ printf '\033[2m%s\033[0m\n' "$*"; }
 die(){ red "$*"; exit 1; }
 ask(){ read -r -p "$1" "$2"; }
 need_root(){ [[ $EUID -eq 0 ]] || die '请使用 root 运行。'; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "缺少依赖：$1"; }
 sha256(){ sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; }
 verify(){ [[ "$(sha256 "$1" | awk '{print $1}')" == "$2" ]] || die "完整性校验失败：$3（已保留原配置，未执行文件）"; }
+valid_channel(){
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != *..* && "$1" != *//* && "$1" != */ ]]
+}
+set_channel(){
+  valid_channel "$1" || { red '渠道格式无效，只能使用安全的 Git 分支或标签名称。'; return 1; }
+  FORK_BRANCH=$1
+  FORK_RAW="https://raw.githubusercontent.com/${FORK_OWNER}/${FORK_REPO}/${FORK_BRANCH}"
+}
+load_channel(){
+  local selected=${SBYG_CHANNEL:-}
+  if [[ -z "$selected" && -r "$STATE_DIR/channel" ]]; then
+    IFS= read -r selected < "$STATE_DIR/channel" || true
+  fi
+  [[ -n "$selected" ]] || selected=main
+  set_channel "$selected" || set_channel main
+}
+persist_channel(){
+  local channel_tmp
+  install -d -m 755 "$STATE_DIR"
+  channel_tmp="$STATE_DIR/.channel.$$"
+  printf '%s\n' "$FORK_BRANCH" > "$channel_tmp"
+  chmod 600 "$channel_tmp"
+  mv "$channel_tmp" "$STATE_DIR/channel"
+}
+menu_rule(){ printf '%s\n' '────────────────────────────────────────'; }
+menu_header(){
+  echo
+  blue "$1"
+  menu_rule
+  [[ -n "${2:-}" ]] && dim "当前位置：$2"
+  return 0
+}
+menu_item(){ printf '  %2s. %s\n' "$1" "$2"; }
+menu_back(){ printf '\n'; menu_item 0 "$1"; }
+confirm_change(){
+  local x title=${1:-确认执行这项修改？} detail=${2:-}
+  echo
+  yellow "$title"
+  [[ -n "$detail" ]] && printf '  %s\n' "$detail"
+  menu_item 1 '确认'
+  menu_item 0 '取消并返回'
+  ask '请选择 [0-1]：' x
+  [[ "$x" == 1 ]]
+}
+load_channel
 normalize_state(){ # schema 1/global certificate -> schema 2/per-protocol certificate binding
   jq '
     if .schema == 1 then
@@ -133,14 +179,67 @@ valid_host(){
 valid_uuid(){ [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; }
 port_available(){ ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]$1$"; }
 protocol_label(){ case "$1" in vless) echo Vless-Reality;; vmess) echo Vmess-WS;; hy2) echo Hysteria2;; anytls) echo AnyTLS;; esac; }
+protocol_transport(){ case "$1" in vless|vmess|anytls) echo TCP;; hy2) echo UDP;; esac; }
+protocol_detail(){
+  local tag=$1 detail mode tls cert_id cert_name
+  case "$tag" in
+    vless) detail="SNI $(jq -r '.protocols.vless.sni' "$STATE_FILE")";;
+    vmess)
+      tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE")
+      if [[ "$tls" == true ]]; then
+        cert_id=$(certificate_id_for_tag vmess)
+        cert_name=$(jq -r --arg id "$cert_id" '.certificates[$id].name' "$STATE_FILE")
+        detail="TLS · ${cert_name}"
+      else
+        detail='WS（无 TLS）'
+      fi
+      ;;
+    hy2|anytls)
+      mode=$(certificate_mode "$STATE_FILE" "$tag")
+      cert_id=$(certificate_id_for_tag "$tag")
+      cert_name=$(jq -r --arg id "$cert_id" '.certificates[$id].name' "$STATE_FILE")
+      [[ "$mode" == trusted ]] && mode='受信证书' || mode='固定证书'
+      detail="${mode} · ${cert_name}"
+      ;;
+  esac
+  printf '%s\n' "$detail"
+}
+protocol_status_line(){
+  local index=$1 tag=$2 line port
+  if tag_enabled "$tag"; then
+    port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
+    printf -v line '  %s. %-16s [已启用] %-3s %-5s  %s' \
+      "$index" "$(protocol_label "$tag")" "$(protocol_transport "$tag")" "$port" "$(protocol_detail "$tag")"
+    green "$line"
+  else
+    printf -v line '  %s. %-16s [未启用]' "$index" "$(protocol_label "$tag")"
+    dim "$line"
+  fi
+}
+service_runtime_status(){
+  if [[ ! -f "$STATE_FILE" ]]; then
+    printf '未安装'
+  elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    printf '运行中'
+  elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box status >/dev/null 2>&1; then
+    printf '运行中'
+  else
+    printf '已停止'
+  fi
+}
+main_dashboard(){
+  local core='--' protocols=0
+  if [[ -f "$STATE_FILE" ]]; then
+    core=$(jq -r '.core // "--"' "$STATE_FILE" 2>/dev/null || printf '%s' '--')
+    protocols=$(enabled_count 2>/dev/null || printf '0')
+  fi
+  menu_header "sing-box-yg ${SCRIPT_VERSION}" '主菜单'
+  printf '  渠道：%-18s 服务：%-6s\n' "$FORK_BRANCH" "$(service_runtime_status)"
+  printf '  内核：%-18s 协议：%s 个已启用\n' "$core" "$protocols"
+  menu_rule
+}
 cancel_input(){ [[ -z "$1" || "$1" == 0 ]]; }
 apply_state(){ printf '%s\n' "$1" | commit_state || true; }
-confirm_change(){
-  local x
-  echo '1 确认  0 返回上一级'
-  ask '选择：' x
-  [[ "$x" == 1 ]]
-}
 
 install_packages(){
   if command -v apt-get >/dev/null; then apt-get update -y && apt-get install -y curl jq openssl qrencode tar iproute2 iptables coreutils ca-certificates;
@@ -249,13 +348,16 @@ new_state(){
     '{schema:2,core:$core,public_address:"",protocols:{vless:{enabled:false,name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid},vmess:{enabled:false,name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default"}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true}}}'
 }
 
-select_protocols(){ # outputs a JSON state with enabled protocols and unique random ports
-  local core=$1 choice p tag state valid
+choose_protocol_tags(){ # core -> space-separated tags
+  local core=$1 choice p tag valid
   while :; do
-    echo '选择协议（可多选，逗号分隔）：1 Vless-Reality  2 Vmess-WS  3 Hysteria2' >&2
-    [[ "$core" != 1.10* ]] && echo '4 AnyTLS' >&2
-    echo '0 取消安装并返回上一级' >&2
-    ask '例如 1,3,4：' choice; choice=${choice// /}
+    menu_header '安装向导：选择协议' '主菜单 / 安装 / 协议多选' >&2
+    menu_item 1 'Vless-Reality' >&2
+    menu_item 2 'Vmess-WS' >&2
+    menu_item 3 'Hysteria2' >&2
+    [[ "$core" != 1.10* ]] && menu_item 4 'AnyTLS' >&2
+    menu_back '取消安装并返回主菜单' >&2
+    ask '请输入编号，多个用逗号分隔（例如 1,3,4）：' choice; choice=${choice// /}
     cancel_input "$choice" && return 2
     IFS=, read -ra picks <<< "$choice"; valid=1; local chosen=()
     for p in "${picks[@]}"; do
@@ -264,13 +366,28 @@ select_protocols(){ # outputs a JSON state with enabled protocols and unique ran
       [[ -n "$tag" && " ${chosen[*]-} " != *" $tag "* ]] && chosen+=("$tag")
     done
     ((valid)) && ((${#chosen[@]})) || { red '输入无效；1.10 内核不支持 AnyTLS。' >&2; continue; }
-    state=$(new_state "$core")
-    for tag in "${chosen[@]}"; do
-      while :; do p=$(random_port); [[ " $(jq -r '[.protocols[].port]|join(" ")' <<<"$state") " != *" $p "* ]] && port_available "$p" && break; done
-      state=$(jq --arg t "$tag" --argjson p "$p" '.protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
-    done
-    printf '%s\n' "$state"; return
+    printf '%s\n' "${chosen[*]}"
+    return 0
   done
+}
+state_for_protocol_tags(){ # core "tag tag ..." -> JSON state
+  local core=$1 tags=$2 p tag state
+  state=$(new_state "$core")
+  for tag in $tags; do
+    while :; do
+      p=$(random_port)
+      [[ " $(jq -r '[.protocols[].port]|join(" ")' <<<"$state") " != *" $p "* ]] &&
+        port_available "$p" && break
+    done
+    state=$(jq --arg t "$tag" --argjson p "$p" \
+      '.protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
+  done
+  printf '%s\n' "$state"
+}
+select_protocols(){ # compatibility wrapper used by tests and library callers
+  local core=$1 tags
+  tags=$(choose_protocol_tags "$core") || return $?
+  state_for_protocol_tags "$core" "$tags"
 }
 
 inbound_for(){ # state tag -> JSON object; all listeners remain ::
@@ -581,7 +698,8 @@ generate_subscriptions(){
 
 show_nodes(){
   [[ -f "$STATE_FILE" ]] || return
-  echo '已启用协议及完整状态（服务监听始终为 ::）：'
+  menu_header '节点与完整配置' '主菜单 / 配置 / 查看节点'
+  dim '仅显示已启用协议；服务监听地址始终为 ::。'
   jq '{public_address,certificates,protocols:(.protocols|with_entries(select(.value.enabled)))}' "$STATE_FILE"
   [[ -s "$STATE_DIR/subscription.txt" ]] && { echo; cat "$STATE_DIR/subscription.txt"; }
 }
@@ -660,9 +778,14 @@ EOF
 }
 
 set_address(){
-  local choice x candidate
-  echo '对外地址：1 设置 IPv4/IPv6/域名  2 自动探测  0 返回上一级'
-  ask '选择：' choice
+  local choice x candidate current
+  current=$(jq -r '.public_address | if length>0 then . else "自动探测" end' "$STATE_FILE")
+  menu_header '对外地址' '主菜单 / 配置 / 对外地址'
+  printf '  当前值：%s\n\n' "$current"
+  menu_item 1 '设置 IPv4、IPv6 或域名'
+  menu_item 2 '恢复自动探测'
+  menu_back '返回配置菜单'
+  ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1)
@@ -693,8 +816,11 @@ set_uuid(){
 }
 set_bool(){
   local tag=$1 field=$2 x value candidate
-  echo '1 开启  2 关闭  0 返回上一级'
-  ask '选择：' x
+  menu_header '开关设置' "主菜单 / 配置 / 协议 / $(protocol_label "$tag")"
+  menu_item 1 '开启'
+  menu_item 2 '关闭'
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' x
   cancel_input "$x" && return 0
   case "$x" in 1) value=true;;2) value=false;;*) red '无效输入。'; return 0;;esac
   candidate=$(jq --arg t "$tag" --arg f "$field" --argjson x "$value" '.protocols[$t][$f]=$x' "$STATE_FILE")
@@ -710,17 +836,22 @@ set_number(){
 }
 set_port(){
   local tag=$1 x candidate current
+  current=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
+  printf '当前端口：%s/%s\n' "$current" "$(protocol_transport "$tag")"
   ask '新端口（1-65535，回车/0 返回上一级）：' x
   cancel_input "$x" && return 0
   valid_port "$x" || { red '端口无效。'; return 0; }
-  current=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
   [[ "$x" == "$current" ]] || port_available "$x" || { red '端口被其他进程占用。'; return 0; }
+  [[ "$x" == "$current" ]] && { yellow '新端口与当前端口相同，未做修改。'; return 0; }
+  confirm_change "确认修改 $(protocol_label "$tag") 端口？" \
+    "${current}/$(protocol_transport "$tag") → ${x}/$(protocol_transport "$tag")；服务、订阅和 UFW 规则将事务同步。" || return 0
   candidate=$(jq --arg t "$tag" --argjson p "$x" '.protocols[$t].port=$p' "$STATE_FILE")
   apply_state "$candidate"
 }
 rotate_reality_keys(){
   local pair priv pub sid
-  confirm_change || return 0
+  confirm_change '确认轮换 Reality 密钥和 Short ID？' \
+    '现有 Vless-Reality 节点链接会立即失效，修改成功后必须重新导入订阅。' || return 0
   pair=$("$STATE_DIR/sing-box" generate reality-keypair); priv=$(awk -F': ' '/PrivateKey/{print $2}' <<<"$pair"); pub=$(awk -F': ' '/PublicKey/{print $2}' <<<"$pair"); sid=$(openssl rand -hex 4)
   [[ -n "$priv" && -n "$pub" ]] || { red '密钥生成失败。'; return 0; }
   apply_state "$(jq --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '.protocols.vless.private_key=$priv | .protocols.vless.public_key=$pub | .protocols.vless.short_id=$sid' "$STATE_FILE")"
@@ -807,7 +938,8 @@ choose_scanned_reality_sni(){
   results=$(scan_reality_candidates) || true
   [[ -n "$results" ]] || { red '10 个候选均未达到稳定性要求，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
-  echo '扫描结果（延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动）：'
+  menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
+  dim '延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动。'
   printf '%-3s %-23s %-5s %-4s %-5s %-18s %-24s %-8s %-8s %-5s\n' \
     '序号' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
   for ((i=0; i<${#rows[@]}; i++)); do
@@ -815,8 +947,8 @@ choose_scanned_reality_sni(){
     printf '%-3d %-23s %-5s %-4s %-5s %-18s %-24s %4d ms %4d ms %d/%d\n' \
       "$((i + 1))" "$host" '可用' "$tls" "$alpn" "$curve" "$cert" "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
   done
-  echo '0 返回上一级'
-  ask '选择扫描目标：' choice
+  menu_back '返回 Reality 设置'
+  ask '请选择扫描目标：' choice
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-5]$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
   IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
@@ -825,8 +957,12 @@ choose_scanned_reality_sni(){
 }
 set_reality_sni(){
   local choice host results candidate
-  echo 'Reality SNI：1 扫描 10 个默认目标并选择  2 扫描自定义目标  0 返回上一级'
-  ask '选择：' choice
+  menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
+  printf '  当前 SNI：%s\n\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
+  menu_item 1 '扫描 10 个默认目标并选择'
+  menu_item 2 '扫描自定义目标'
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1) choose_scanned_reality_sni;;
@@ -865,8 +1001,11 @@ set_certificate(){
   ask '私钥完整路径（回车/0 返回上一级）：' key
   cancel_input "$key" && return 0
   certificate_pair_valid "$cert" "$key" || { red '证书/私钥不可读、格式无效或公私钥不匹配。'; return 0; }
-  echo '客户端证书校验：1 自签证书固定 SHA256  2 系统 CA 验证（ACME/受信证书，推荐）  0 返回上一级'
-  ask '选择：' choice
+  menu_header '客户端证书校验' '主菜单 / 配置 / 证书管理 / 导入证书'
+  menu_item 1 '自签证书固定 SHA256'
+  menu_item 2 '系统 CA 验证（ACME / 受信证书，推荐）'
+  menu_back '取消导入'
+  ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1) mode=pinned; insecure=true;;
@@ -958,6 +1097,8 @@ bind_trusted_domain_certificate(){ # tag domain cert key
 }
 domain_certificate_wizard(){ # target tag
   local tag=$1 domain choice
+  menu_header '域名证书向导' "主菜单 / 域名证书 / $( [[ "$tag" == all ]] && printf '全部协议' || protocol_label "$tag" )"
+  dim 'Cloudflare DNS 记录应保持灰云；脚本会先查找可复用证书，再提供 ACME 或手动导入。'
   ask '准备使用的证书域名（Cloudflare 请保持灰云；回车/0 返回上一级）：' domain
   cancel_input "$domain" && return 0
   valid_host "$domain" && [[ "$domain" != *:* && ! "$domain" =~ ^[0-9.]+$ ]] ||
@@ -966,8 +1107,10 @@ domain_certificate_wizard(){ # target tag
     green "检测到覆盖 ${domain} 且公私钥匹配的现有证书：$FOUND_CERT"
   else
     yellow "没有检测到覆盖 ${domain} 的可用域名证书。"
-    echo '1 运行锁定版 ACME 申请  2 手动指定已有证书  0 返回上一级'
-    ask '选择：' choice
+    menu_item 1 '运行锁定版 ACME 申请'
+    menu_item 2 '手动指定已有证书'
+    menu_back '取消并返回'
+    ask '请选择 [0-2]：' choice
     case "$choice" in
       1)
         if ! acme; then yellow 'ACME 脚本未正常完成，正在检查是否生成了有效证书。'; fi
@@ -987,8 +1130,13 @@ domain_certificate_wizard(){ # target tag
 }
 domain_certificate_target_menu(){
   local choice tag
-  echo '域名证书应用到：1 Vmess-WS  2 Hysteria2  3 AnyTLS  4 全部协议  0 返回上一级'
-  ask '选择：' choice
+  menu_header '域名证书向导' '主菜单 / 域名证书'
+  menu_item 1 '应用到 Vmess-WS'
+  menu_item 2 '应用到 Hysteria2'
+  menu_item 3 '应用到 AnyTLS'
+  menu_item 4 '应用到全部普通 TLS 协议'
+  menu_back '返回上一级'
+  ask '请选择 [0-4]：' choice
   case "$choice" in
     1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;4)tag=all;;0|'')return 0;;
     *)red '无效输入。'; return 0;;
@@ -1037,8 +1185,12 @@ set_tls_domain(){
 tls_domain_menu(){
   local choice tag
   while :; do
-    echo '证书域名：1 Vmess-WS  2 Hysteria2  3 AnyTLS  0 返回上一级'
-    ask '选择：' choice
+    menu_header '修改协议证书域名' '主菜单 / 配置 / 证书管理 / 证书域名'
+    menu_item 1 'Vmess-WS'
+    menu_item 2 'Hysteria2'
+    menu_item 3 'AnyTLS'
+    menu_back '返回证书管理'
+    ask '请选择 [0-3]：' choice
     case "$choice" in
       1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;0|'')return 0;;*)red '无效输入。'; continue;;
     esac
@@ -1048,8 +1200,12 @@ tls_domain_menu(){
 select_certificate_for_protocol(){
   local target_choice tag index choice id name mode cert domain candidate new_domain key certificate_row
   local -a certificate_rows=()
-  echo '选择协议：1 Vmess-WS  2 Hysteria2  3 AnyTLS  0 返回上一级'
-  ask '选择：' target_choice
+  menu_header '选择协议证书' '主菜单 / 配置 / 证书管理 / 选择证书'
+  menu_item 1 'Vmess-WS'
+  menu_item 2 'Hysteria2'
+  menu_item 3 'AnyTLS'
+  menu_back '返回证书管理'
+  ask '请选择协议 [0-3]：' target_choice
   case "$target_choice" in 1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;0|'')return 0;;*)red '无效输入。'; return 0;;esac
   domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")
   while IFS= read -r certificate_row; do certificate_rows+=("$certificate_row"); done < <(
@@ -1061,8 +1217,8 @@ select_certificate_for_protocol(){
     IFS=$'\t' read -r id name mode cert <<<"${certificate_rows[$index]}"
     printf '%d %s [%s] %s\n' "$((index + 1))" "$name" "$mode" "$cert"
   done
-  echo '0 返回上一级'
-  ask '选择：' choice
+  menu_back '返回证书管理'
+  ask '请选择证书：' choice
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-9][0-9]*$ && "$choice" -le "${#certificate_rows[@]}" ]] || { red '无效输入。'; return 0; }
   IFS=$'\t' read -r id name mode cert <<<"${certificate_rows[$((choice - 1))]}"
@@ -1087,8 +1243,14 @@ select_certificate_for_protocol(){
 certificate_menu(){
   local choice
   while :; do
-    echo '证书管理：1 查看证书库/协议绑定  2 导入证书到证书库  3 修改协议证书域名  4 域名证书向导（检测/ACME/自动绑定）  5 为协议选择证书  0 返回上一级'
-    ask '选择：' choice
+    menu_header '证书管理' '主菜单 / 配置 / 证书管理'
+    menu_item 1 '查看证书库与协议绑定'
+    menu_item 2 '导入证书到证书库'
+    menu_item 3 '修改协议证书域名'
+    menu_item 4 '域名证书向导（检测 / ACME / 自动绑定）'
+    menu_item 5 '为协议选择证书'
+    menu_back '返回配置菜单'
+    ask '请选择 [0-5]：' choice
     case "$choice" in
       1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
       4)domain_certificate_target_menu;;5)select_certificate_for_protocol;;
@@ -1098,8 +1260,12 @@ certificate_menu(){
 }
 set_hy2_hop(){
   local choice x start end candidate
-  echo 'UDP 端口跳跃：1 设置范围  2 关闭  0 返回上一级'
-  ask '选择：' choice
+  menu_header 'UDP 端口跳跃' '主菜单 / 配置 / 协议 / Hysteria2 / UDP 端口跳跃'
+  printf '  当前范围：%s\n\n' "$(jq -r '.protocols.hy2.udp_hop | if length>0 then . else "未启用" end' "$STATE_FILE")"
+  menu_item 1 '设置端口范围'
+  menu_item 2 '关闭端口跳跃'
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1)
@@ -1117,8 +1283,12 @@ set_hy2_hop(){
 }
 set_argo(){
   local choice domain token candidate
-  echo 'Argo 固定隧道：1 设置  2 关闭  0 返回上一级'
-  ask '选择：' choice
+  menu_header 'Argo 固定隧道' '主菜单 / 配置 / 协议 / Vmess-WS / Argo'
+  printf '  当前域名：%s\n\n' "$(jq -r '.protocols.vmess.argo_domain | if length>0 then . else "未启用" end' "$STATE_FILE")"
+  menu_item 1 '设置固定隧道'
+  menu_item 2 '关闭固定隧道'
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   if [[ "$choice" == 2 ]]; then
     candidate=$(jq '.protocols.vmess.argo_domain="" | .protocols.vmess.argo_token=""' "$STATE_FILE")
@@ -1135,15 +1305,19 @@ set_argo(){
   apply_state "$candidate"
 }
 toggle_protocol(){
-  local tag=$1 state p
-  confirm_change || return 0
+  local tag=$1 state p label
+  label=$(protocol_label "$tag")
   if tag_enabled "$tag"; then
     (( $(enabled_count) > 1 )) || { red '至少保留一个协议。'; return 0; }
+    confirm_change "确认停用 ${label}？" \
+      '服务配置、节点链接、二维码、订阅及脚本管理的 UFW 规则将同步移除；协议参数会保留。' || return 0
     state=$(jq --arg t "$tag" '.protocols[$t].enabled=false' "$STATE_FILE")
   else
     [[ "$tag" != anytls || $(jq -r '.core' "$STATE_FILE") != 1.10* ]] || { red '1.10 内核不支持 AnyTLS。'; return 0; }
     p=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
     if ! valid_port "$p" || ! port_available "$p"; then while :; do p=$(random_port); port_available "$p" && ! jq -e --argjson p "$p" '[.protocols[]|select(.enabled)|.port] | index($p)' "$STATE_FILE" >/dev/null && break; done; fi
+    confirm_change "确认启用 ${label}？" \
+      "将使用 $(protocol_transport "$tag") 端口 ${p}，并同步配置、节点、订阅和 UFW（如已启用）。" || return 0
     state=$(jq --arg t "$tag" --argjson p "$p" '.protocols[$t].port=$p | .protocols[$t].enabled=true' "$STATE_FILE")
   fi
   apply_state "$state"
@@ -1152,15 +1326,18 @@ toggle_protocol(){
 credential_menu(){
   local tag=$1 choice
   while :; do
+    menu_header '凭据管理' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 凭据"
     case "$tag" in
       vless|vmess)
-        echo '凭据：1 UUID  0 返回上一级'
-        ask '选择：' choice
+        menu_item 1 '修改 UUID'
+        menu_back '返回协议设置'
+        ask '请选择 [0-1]：' choice
         case "$choice" in 1)set_uuid "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       hy2|anytls)
-        echo '凭据：1 密码  0 返回上一级'
-        ask '选择：' choice
+        menu_item 1 '修改密码'
+        menu_back '返回协议设置'
+        ask '请选择 [0-1]：' choice
         case "$choice" in 1)set_protocol "$tag" password '密码：';;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
@@ -1170,26 +1347,40 @@ credential_menu(){
 specialty_menu(){
   local tag=$1 choice
   while :; do
+    menu_header '专项参数' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 专项参数"
     case "$tag" in
       vless)
-        echo '专项参数：1 Reality SNI  2 轮换 Reality 密钥和 Short ID  0 返回上一级'
-        ask '选择：' choice
+        menu_item 1 'Reality SNI 与目标扫描'
+        menu_item 2 '轮换 Reality 密钥和 Short ID'
+        menu_back '返回协议设置'
+        ask '请选择 [0-2]：' choice
         case "$choice" in 1)set_reality_sni;;2)rotate_reality_keys;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       vmess)
-        echo '专项参数：1 WS Path  2 TLS  3 CDN 地址  4 Argo 固定隧道  5 证书域名  0 返回上一级'
-        ask '选择：' choice
+        menu_item 1 '修改 WS Path'
+        menu_item 2 '开启或关闭 TLS'
+        menu_item 3 '修改 CDN 地址'
+        menu_item 4 '配置 Argo 固定隧道'
+        menu_item 5 '修改证书域名'
+        menu_back '返回协议设置'
+        ask '请选择 [0-5]：' choice
         case "$choice" in 1)set_protocol vmess path 'WS Path（以 / 开头）：';;2)set_bool vmess tls;;3)set_protocol vmess cdn 'CDN 地址：';;4)set_argo;;5)set_tls_domain vmess;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       hy2)
-        echo '专项参数：1 证书域名  2 上行 Mbps  3 下行 Mbps  4 UDP 端口跳跃  0 返回上一级'
-        ask '选择：' choice
+        menu_item 1 '修改证书域名'
+        menu_item 2 '修改上行带宽'
+        menu_item 3 '修改下行带宽'
+        menu_item 4 '配置 UDP 端口跳跃'
+        menu_back '返回协议设置'
+        ask '请选择 [0-4]：' choice
         case "$choice" in 1)set_tls_domain hy2;;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       anytls)
-        echo '专项参数：1 仅修改证书域名  2 域名证书向导（检测/ACME/自动绑定）  0 返回上一级'
-        echo '普通 TLS 的 SNI 应匹配实际证书域名，不使用 Reality 的伪装候选。'
-        ask '选择：' choice
+        dim '普通 TLS 的 SNI 必须匹配实际证书域名，不使用 Reality 的第三方目标。'
+        menu_item 1 '仅修改证书域名'
+        menu_item 2 '域名证书向导（检测 / ACME / 自动绑定）'
+        menu_back '返回协议设置'
+        ask '请选择 [0-2]：' choice
         case "$choice" in 1)set_tls_domain "$tag";;2)domain_certificate_wizard "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
@@ -1197,14 +1388,31 @@ specialty_menu(){
 }
 
 protocol_menu(){
-  local tag choice
+  local tag choice action port
   while :; do
-    echo '协议：1 Vless-Reality  2 Vmess-WS  3 Hysteria2  4 AnyTLS  0 返回上一级'
-    ask '选择协议：' choice
+    menu_header '协议管理' '主菜单 / 配置 / 协议管理'
+    protocol_status_line 1 vless
+    protocol_status_line 2 vmess
+    protocol_status_line 3 hy2
+    protocol_status_line 4 anytls
+    menu_back '返回配置菜单'
+    ask '请选择协议 [0-4]：' choice
     case "$choice" in 1) tag=vless;;2) tag=vmess;;3) tag=hy2;;4) tag=anytls;;0|'') return 0;;*) red '无效输入。'; continue;; esac
     while :; do
-      echo "$(protocol_label "$tag")：1 启用/停用  2 名称  3 端口  4 凭据  5 专项参数  0 返回上一级"
-      ask '选择：' choice
+      tag_enabled "$tag" && action='停用协议' || action='启用协议'
+      port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
+      valid_port "$port" || port='未分配'
+      menu_header "$(protocol_label "$tag")" "主菜单 / 配置 / 协议管理 / $(protocol_label "$tag")"
+      printf '  状态：%s   端口：%s/%s\n\n' \
+        "$([[ "$action" == 停用协议 ]] && printf '已启用' || printf '未启用')" \
+        "${port:-未分配}" "$(protocol_transport "$tag")"
+      menu_item 1 "$action"
+      menu_item 2 '修改节点名称'
+      menu_item 3 '修改监听端口'
+      menu_item 4 '修改凭据'
+      menu_item 5 '专项参数'
+      menu_back '返回协议列表'
+      ask '请选择 [0-5]：' choice
       case "$choice" in
         1) toggle_protocol "$tag";;2) set_protocol "$tag" name '节点名称：';;3) set_port "$tag";;
         4) credential_menu "$tag";;5) specialty_menu "$tag";;0|'') break;;*) red '无效输入。';;
@@ -1214,10 +1422,20 @@ protocol_menu(){
 }
 
 configure_menu(){
-  while :; do echo; echo '配置菜单：1 查看节点 2 管理协议 3 对外地址 4 二维码 5 重新生成订阅 6 证书管理 7 应用当前配置并重启 0 返回'; ask '选择：' m
+  while :; do
+    menu_header '配置、节点与订阅' '主菜单 / 配置'
+    menu_item 1 '查看已启用节点和完整链接'
+    menu_item 2 '管理协议'
+    menu_item 3 '修改分享链接的对外地址'
+    menu_item 4 '显示节点二维码'
+    menu_item 5 '重新生成订阅'
+    menu_item 6 '证书管理'
+    menu_item 7 '应用当前配置并重启'
+    menu_back '返回主菜单'
+    ask '请选择 [0-7]：' m
     case "$m" in
       1) show_nodes;;2) protocol_menu;;3) set_address;;4) show_qr;;
-      5) if confirm_change; then generate_subscriptions; green '订阅已更新。'; fi;;
+      5) if confirm_change '确认重新生成全部订阅？' '只读取当前已启用协议，不修改服务端配置。'; then generate_subscriptions; green '订阅已更新。'; fi;;
       6)certificate_menu;;7)apply_current_state || true;;0|'') return 0;;*) red '无效输入。';;
     esac
   done
@@ -1229,10 +1447,13 @@ offer_tls_certificate_setup(){
     .protocols.anytls.enabled or .protocols.hy2.enabled or
     (.protocols.vmess.enabled and .protocols.vmess.tls)
   ' "$STATE_FILE" >/dev/null || return 0
-  echo
+  menu_header '安装完成：证书建议' '主菜单 / 安装 / 证书'
   yellow '普通 TLS 协议当前使用安全的自签证书固定模式。'
-  echo '有自有域名时，推荐改用灰云 DNS + ACME 受信证书：1 现在进入证书管理  2 暂时保留固定模式  0 返回主菜单'
-  ask '选择：' choice
+  dim '有自有域名时，推荐使用灰云 DNS + ACME 受信证书。'
+  menu_item 1 '现在进入证书管理'
+  menu_item 2 '暂时保留固定模式'
+  menu_back '返回主菜单'
+  ask '请选择 [0-2]：' choice
   case "$choice" in
     1) certificate_menu;;
     2|0|'') return 0;;
@@ -1241,14 +1462,29 @@ offer_tls_certificate_setup(){
 }
 
 install_flow(){
-  local core choice state
-  echo "选择内核：1 ${SB_DEFAULT}（默认，含 AnyTLS）  2 ${SB_110}（不含 AnyTLS）  0 返回上一级"
-  ask '选择：' choice
+  local core choice state tags tag labels=
+  menu_header '安装向导：选择内核' '主菜单 / 安装'
+  menu_item 1 "${SB_DEFAULT}（推荐，支持 AnyTLS）"
+  menu_item 2 "${SB_110}（兼容版，不支持 AnyTLS）"
+  menu_back '取消安装并返回主菜单'
+  ask '请选择 [0-2]：' choice
   case "$choice" in 1)core=$SB_DEFAULT;;2)core=$SB_110;;0|'')return 0;;*)red '无效输入。'; return 0;;esac
+  tags=$(choose_protocol_tags "$core") || { yellow '安装已取消，系统未做修改。'; return 0; }
+  for tag in $tags; do labels+="${labels:+、}$(protocol_label "$tag")"; done
+  menu_header '安装摘要' '主菜单 / 安装 / 确认'
+  printf '  Sing-box 内核：%s\n' "$core"
+  printf '  启用协议：%s\n' "$labels"
+  printf '  更新渠道：%s\n' "$FORK_BRANCH"
+  dim '确认后才会安装依赖、下载并校验文件、生成配置和启动服务。'
+  confirm_change '确认开始安装？' '协议端口将自动选择未占用端口，安装后可随时修改。' ||
+    { yellow '安装已取消，系统未做修改。'; return 0; }
   install_packages
   install_singbox "$core"; install_rule_databases
-  if ! state=$(select_protocols "$core"); then yellow '安装已取消，尚未写入协议状态或启动服务。'; return 0; fi
-  printf '%s\n' "$state" | commit_state
+  state=$(state_for_protocol_tags "$core" "$tags")
+  if ! printf '%s\n' "$state" | commit_state; then
+    red '安装配置未能应用，请根据上方错误处理后重试。'
+    return 0
+  fi
   printf '%s\n' "$core" > "$STATE_DIR/core-version"
   update_script no-reload
   green '安装完成。可通过 sb → 配置菜单随时增删协议。'
@@ -1257,12 +1493,20 @@ install_flow(){
 
 update_script(){
   local reload=${1:-reload} expected
+  if [[ "$reload" == reload ]]; then
+    menu_header '更新脚本' '主菜单 / 更新管理'
+    printf '  更新渠道：%s\n' "$FORK_BRANCH"
+    printf '  下载地址：%s/sb.sh\n' "$FORK_RAW"
+    confirm_change '确认下载、校验并切换脚本？' \
+      "更新成功后将保存渠道 ${FORK_BRANCH}，并立即进入新脚本。" || return 2
+  fi
   WORKDIR=$(tmpdir)
   expected=$(curl -fsSL --proto '=https' --tlsv1.2 "$FORK_RAW/sb.sh.sha256" | awk '{print $1}')
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die 'fork 快捷脚本校验文件无效，拒绝更新。'
   download_verified "$FORK_RAW/sb.sh" "$expected" "$WORKDIR/sb.sh" 'fork 快捷脚本'
   install -m 755 "$WORKDIR/sb.sh" /usr/local/bin/sb
-  green '脚本更新完成。'
+  persist_channel
+  green "脚本更新完成，渠道已保存为 ${FORK_BRANCH}。"
   if [[ "$reload" == reload ]]; then
     green '正在切换到新脚本进程...'
     trap - EXIT
@@ -1270,15 +1514,55 @@ update_script(){
     exec /usr/local/bin/sb
   fi
 }
+update_menu(){
+  local choice custom previous
+  while :; do
+    menu_header '更新管理' '主菜单 / 更新管理'
+    printf '  当前渠道：%s\n\n' "$FORK_BRANCH"
+    menu_item 1 "从当前渠道更新（${FORK_BRANCH}）"
+    menu_item 2 '切换到稳定版 v0.0.1 并更新'
+    menu_item 3 '切换到开发版 main 并更新'
+    menu_item 4 '输入其他分支或标签'
+    menu_back '返回主菜单'
+    ask '请选择 [0-4]：' choice
+    previous=$FORK_BRANCH
+    case "$choice" in
+      1) update_script && return 0 || true;;
+      2)
+        set_channel v0.0.1
+        update_script && return 0 || set_channel "$previous"
+        ;;
+      3)
+        set_channel main
+        update_script && return 0 || set_channel "$previous"
+        ;;
+      4)
+        ask '分支或标签（回车/0 返回上一级）：' custom
+        cancel_input "$custom" && continue
+        if set_channel "$custom"; then
+          update_script && return 0 || set_channel "$previous"
+        else
+          set_channel "$previous"
+        fi
+        ;;
+      0|'') return 0;;
+      *) red '无效输入。';;
+    esac
+  done
+}
 check_version(){
   local latest
   latest=$(curl -fsSL --max-time 3 "$FORK_RAW/version" 2>/dev/null | head -n1 || true)
-  [[ -n "$latest" && "$latest" != "$SCRIPT_VERSION"* ]] && yellow "fork main 可用版本：$latest（当前 $SCRIPT_VERSION）"
+  [[ -n "$latest" && "$latest" != "$SCRIPT_VERSION"* ]] &&
+    yellow "渠道 ${FORK_BRANCH} 可用版本：$latest（当前 $SCRIPT_VERSION）"
   return 0
 }
 update_core(){
   local v candidate tmp cfg
-  echo "锁定版本：${SB_DEFAULT}；也可输入其他官方版本。"
+  menu_header '更新或切换 Sing-box 内核' '主菜单 / 内核管理'
+  printf '  当前版本：%s\n' "$(jq -r '.core' "$STATE_FILE")"
+  printf '  推荐版本：%s\n\n' "$SB_DEFAULT"
+  dim '也可以输入其他官方版本；必须获取并验证对应官方校验文件。'
   ask '版本号（回车/0 返回上一级）：' v
   cancel_input "$v" && return 0
   [[ "$v" != 1.10* || $(jq -r '.protocols.anytls.enabled' "$STATE_FILE") != true ]] || { red '请先停用 AnyTLS，再切换到 1.10。'; return 0; }
@@ -1337,16 +1621,46 @@ main(){
   else
     migration_rc=$?
     if [[ "$migration_rc" == 2 ]]; then
-      echo '1 卸载旧 TUIC 安装  0 返回终端'
-      ask '选择：' migration_choice
+      menu_header '旧版 TUIC 状态处理' '启动检查'
+      menu_item 1 '卸载旧 TUIC 安装'
+      menu_back '返回终端'
+      ask '请选择 [0-1]：' migration_choice
       [[ "$migration_choice" == 1 ]] && { uninstall && exit 0; }
       exit 0
     fi
     die '状态迁移失败，原运行配置已保留。'
   fi
   check_version
-  while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 域名证书/ACME  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
-    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) if uninstall; then exit 0; fi;;0) exit 0;;*) red '无效输入。';;esac
+  while :; do
+    main_dashboard
+    menu_item 1 '安装'
+    menu_item 2 '配置、节点与订阅'
+    menu_item 3 '应用当前配置并重启'
+    menu_item 4 '更新或切换 Sing-box 内核'
+    menu_item 5 '更新管理'
+    menu_item 6 '查看服务日志'
+    menu_item 7 '域名证书 / ACME'
+    menu_item 8 'WARP'
+    menu_item 9 'BBR'
+    menu_item 10 'WARP-plus'
+    menu_item 11 '卸载'
+    menu_back '退出'
+    ask '请选择 [0-11]：' m
+    case "$m" in
+      1) [[ -f "$STATE_FILE" ]] && red '当前已安装，请进入“配置、节点与订阅”管理。' || install_flow;;
+      2) require_install && configure_menu;;
+      3) require_install && { apply_current_state || true; };;
+      4) require_install && update_core;;
+      5) update_menu;;
+      6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;
+      7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;
+      8) warp;;
+      9) bbr;;
+      10) require_install && install_sbwpph;;
+      11) if uninstall; then exit 0; fi;;
+      0) exit 0;;
+      *) red '无效输入。';;
+    esac
   done
 }
 [[ "${SBYG_LIB_ONLY:-0}" == 1 ]] || main "$@"

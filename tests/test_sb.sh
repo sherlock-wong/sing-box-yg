@@ -39,6 +39,44 @@ set_case_dir(){
   mkdir -p "$STATE_DIR"
 }
 
+# Update channels persist across later `sb` runs, while an explicit environment
+# selection wins for the current run and is validated before use.
+set_case_dir channel
+printf 'v0.0.1\n' > "$STATE_DIR/channel"
+unset SBYG_CHANNEL
+load_channel
+[[ "$FORK_BRANCH" == v0.0.1 && "$FORK_RAW" == */v0.0.1 ]]
+export SBYG_CHANNEL=feature/ux-test
+load_channel
+[[ "$FORK_BRANCH" == feature/ux-test && "$FORK_RAW" == */feature/ux-test ]]
+persist_channel
+[[ $(cat "$STATE_DIR/channel") == feature/ux-test ]]
+! valid_channel 'bad..ref'
+! valid_channel '/absolute'
+! valid_channel 'double//slash'
+unset SBYG_CHANNEL
+set_channel main
+saved_update_script=$(declare -f update_script)
+selected_update_channel=
+update_script(){ selected_update_channel=$FORK_BRANCH; }
+update_menu <<<"2"
+[[ "$selected_update_channel" == v0.0.1 ]]
+set_channel main
+update_menu <<< $'4\nfeature/next'
+[[ "$selected_update_channel" == feature/next ]]
+update_script(){ return 2; }
+set_channel main
+update_menu <<< $'2\n0'
+[[ "$FORK_BRANCH" == main ]]
+eval "$saved_update_script"
+set_channel main
+saved_install_packages=$(declare -f install_packages)
+install_package_calls=0
+install_packages(){ install_package_calls=$((install_package_calls + 1)); }
+install_flow <<< $'1\n1,3\n0'
+[[ $install_package_calls -eq 0 && ! -e "$STATE_FILE" ]]
+eval "$saved_install_packages"
+
 make_state(){
   local version=$1 core=$2
   cp "$core" "$STATE_DIR/sing-box"
@@ -105,6 +143,13 @@ check_case single 1.13.14 "$CORE_DEFAULT" 1 vless
 check_case multi 1.13.14 "$CORE_DEFAULT" 3 vless hy2 anytls
 check_case four 1.13.14 "$CORE_DEFAULT" 4 vless vmess hy2 anytls
 check_case legacy 1.10.7 "$CORE_110" 3 vless vmess hy2
+
+# Protocol menus expose live enabled state, transport, port and TLS details.
+set_case_dir four
+protocol_line=$(protocol_status_line 1 vless)
+[[ "$protocol_line" == *'Vless-Reality'*'[已启用]'*'TCP'*'25001'*'SNI www.apple.com'* ]]
+protocol_line=$(protocol_status_line 4 anytls)
+[[ "$protocol_line" == *'AnyTLS'*'[已启用]'*'TCP'*'固定证书'* ]]
 
 # New self-signed certificates are leaf certificates with SAN and both client-specific pins.
 four_state=$(cat "$TEST_ROOT/four/protocols.json")
