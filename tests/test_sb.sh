@@ -118,6 +118,8 @@ set_number hy2 up_mbps '上行 Mbps：' <<<"0"
 set_port vless <<<"0"
 set_address <<<"0"
 set_certificate <<<"0"
+set_tls_domain anytls <<<"0"
+certificate_menu <<<"0"
 set_hy2_hop <<<"0"
 set_argo <<<"0"
 set_reality_sni <<<"0"
@@ -127,18 +129,57 @@ update_core <<<"0"
 protocol_menu <<< $'1\n5\n0\n0\n0'
 [[ $apply_calls -eq 0 ]]
 
-# Reality exposes the first five 3x-ui v3.4.2 defaults and validates before apply.
-saved_probe_reality_sni=$(declare -f probe_reality_sni)
+# Reality scans all ten 3x-ui v3.4.2 defaults, ranks stability/latency, and applies a selected top-five result.
+[[ ${#REALITY_CANDIDATES[@]} -eq 10 ]]
+[[ ${REALITY_CANDIDATES[0]} == www.cloudflare.com && ${REALITY_CANDIDATES[9]} == dl.google.com ]]
+saved_probe_reality_once=$(declare -f probe_reality_once)
+probe_reality_once(){
+  local host=$1 sample=$2
+  case "$host" in
+    fast.example) echo "$((20 + sample))";;
+    slow.example) echo "$((80 + sample * 2))";;
+    flaky.example) [[ $sample -lt 3 ]] && echo "$((30 + sample))" || return 1;;
+    *) return 1;;
+  esac
+}
+ranked=$(scan_reality_candidates slow.example flaky.example bad.example fast.example)
+[[ $(awk -F '\t' 'NR==1{print $1}' <<<"$ranked") == fast.example ]]
+[[ $(awk -F '\t' 'NR==2{print $1}' <<<"$ranked") == slow.example ]]
+[[ $(awk -F '\t' 'NR==3{print $1}' <<<"$ranked") == flaky.example ]]
+eval "$saved_probe_reality_once"
+
+saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
 captured_state=
 apply_state(){ captured_state=$1; }
-probe_reality_sni(){ [[ "$1" == www.cloudflare.com ]]; }
-set_reality_sni <<<"1"
+scan_reality_candidates(){ printf 'www.cloudflare.com\t3\t42\t6\nwww.microsoft.com\t3\t55\t9\n'; }
+set_reality_sni <<< $'1\n1'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
 validate_state "$captured_state"
 render_config "$captured_state" "$STATE_DIR/reality-candidate.json"
 "$STATE_DIR/sing-box" check -c "$STATE_DIR/reality-candidate.json"
 eval "$saved_apply_state"
-eval "$saved_probe_reality_sni"
+eval "$saved_scan_reality_candidates"
+
+# A trusted certificate setting propagates to share links and must cover enabled TLS protocol domains.
+set_case_dir certificate
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=tls.example.com' -addext 'subjectAltName=DNS:tls.example.com' \
+  -keyout "$STATE_DIR/trusted.key" -out "$STATE_DIR/trusted.pem" >/dev/null 2>&1
+cert_state=$(jq --arg cert "$STATE_DIR/trusted.pem" --arg key "$STATE_DIR/trusted.key" \
+  '.certificate={cert:$cert,key:$key,insecure:false} | .public_address="node.example.com" |
+   .protocols.vmess.domain="tls.example.com" | .protocols.hy2.domain="tls.example.com" |
+   .protocols.tuic.domain="tls.example.com" | .protocols.anytls.domain="tls.example.com"' <<<"$five_state")
+printf '%s\n' "$cert_state" > "$STATE_FILE"
+saved_certificate_matches_domain=$(declare -f certificate_matches_domain)
+certificate_matches_domain(){ [[ "$2" == tls.example.com ]]; }
+certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
+generate_subscriptions
+[[ $(grep -c 'insecure=0' "$STATE_DIR/subscription.txt") -eq 3 ]]
+jq -e '[.proxies[] | select(.type=="hysteria2" or .type=="tuic" or .type=="anytls") | ."skip-cert-verify"] | all(. == false)' "$STATE_DIR/mihomo.yaml" >/dev/null
+bad_cert_state=$(jq '.protocols.anytls.domain="other.example.com"' <<<"$cert_state")
+printf '%s\n' "$bad_cert_state" > "$STATE_FILE"
+! certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
+eval "$saved_certificate_matches_domain"
 
 # Subscription/config output follows runtime disable.
 set_case_dir sync

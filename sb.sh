@@ -32,6 +32,19 @@ METACUBEX_GEOIP_ASSET=488939089
 METACUBEX_GEOIP_SHA256=fad057ea2b145d243383db031b5804836e92de30203f31691e974cb14820bf36
 METACUBEX_GEOSITE_ASSET=488939110
 METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa
+REALITY_SCAN_SAMPLES=3
+REALITY_CANDIDATES=(
+  www.cloudflare.com
+  www.microsoft.com
+  www.amazon.com
+  aws.amazon.com
+  www.samsung.com
+  www.nvidia.com
+  www.amd.com
+  www.intel.com
+  www.sony.com
+  dl.google.com
+)
 
 red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
@@ -294,16 +307,16 @@ mihomo_proxy_for(){
     vmess)
       argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE")
       [[ -n "$argo" ]] && { server=$argo; port=443; } || { server=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); }
-      jq -c --arg s "$server" --argjson p "$port" --arg argo "$argo" '.protocols.vmess as $x | {name:$x.name,type:"vmess",server:$s,port:$p,uuid:$x.uuid,alterId:0,cipher:"auto",udp:true,network:"ws",tls:($x.tls or (($argo|length)>0)),servername:(if ($argo|length)>0 then $argo else $x.domain end),"ws-opts":{path:$x.path,headers:{Host:(if ($argo|length)>0 then $argo else $x.domain end)}}}' "$STATE_FILE";;
+      jq -c --arg s "$server" --argjson p "$port" --arg argo "$argo" '.protocols.vmess as $x | .certificate as $c | {name:$x.name,type:"vmess",server:$s,port:$p,uuid:$x.uuid,alterId:0,cipher:"auto",udp:true,network:"ws",tls:($x.tls or (($argo|length)>0)),servername:(if ($argo|length)>0 then $argo else $x.domain end),"skip-cert-verify":$c.insecure,"ws-opts":{path:$x.path,headers:{Host:(if ($argo|length)>0 then $argo else $x.domain end)}}}' "$STATE_FILE";;
     hy2) jq -c --arg s "$server" --argjson p "$port" '.protocols.hy2 as $x | .certificate as $c | {name:$x.name,type:"hysteria2",server:$s,port:$p,password:$x.password,sni:$x.domain,"skip-cert-verify":$c.insecure,up:(($x.up_mbps|tostring)+" Mbps"),down:(($x.down_mbps|tostring)+" Mbps")}' "$STATE_FILE";;
     tuic) jq -c --arg s "$server" --argjson p "$port" '.protocols.tuic as $x | .certificate as $c | {name:$x.name,type:"tuic",server:$s,port:$p,uuid:$x.uuid,password:$x.password,sni:$x.domain,"skip-cert-verify":$c.insecure,udp:true,"congestion-controller":"bbr"}' "$STATE_FILE";;
     anytls) jq -c --arg s "$server" --argjson p "$port" '.protocols.anytls as $x | .certificate as $c | {name:$x.name,type:"anytls",server:$s,port:$p,password:$x.password,sni:$x.domain,"skip-cert-verify":$c.insecure,udp:true}' "$STATE_FILE";;
   esac
 }
 generate_subscriptions(){
-  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy
+  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy insecure
   local client="$STATE_DIR/sing-box-client.json" mihomo="$STATE_DIR/mihomo.yaml"
-  host=$(address); endpoint=$(uri_host "$host"); : > "$out"
+  host=$(address); endpoint=$(uri_host "$host"); insecure=$(jq -r '.certificate.insecure | if . then 1 else 0 end' "$STATE_FILE"); : > "$out"
   jq -n '{log:{level:"warn"},outbounds:[]}' > "$client"; jq -n '{proxies:[],"proxy-groups":[{name:"PROXY",type:"select",proxies:[]}]}' > "$mihomo"
   [[ -n "$host" ]] || { : > "$STATE_DIR/subscription.base64"; : > "$STATE_DIR/mihomo-subscription.txt"; yellow '未填写公网地址，暂不生成分享链接。'; return; }
   for tag in vless vmess hy2 tuic anytls; do
@@ -312,9 +325,9 @@ generate_subscriptions(){
     case "$tag" in
       vless) uuid=$(jq -r '.protocols.vless.uuid' "$STATE_FILE"); sni=$(jq -r '.protocols.vless.sni' "$STATE_FILE"); pk=$(jq -r '.protocols.vless.public_key' "$STATE_FILE"); sid=$(jq -r '.protocols.vless.short_id' "$STATE_FILE"); line="vless://${uuid}@${endpoint}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pk}&sid=${sid}&type=tcp#$(urlencode "$name")";;
       vmess) uuid=$(jq -r '.protocols.vmess.uuid' "$STATE_FILE"); path=$(jq -r '.protocols.vmess.path' "$STATE_FILE"); tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE"); argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE"); [[ -n "$argo" ]] && { endpoint=$argo; port=443; tls=true; } || endpoint=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); line="vmess://$(jq -nc --arg add "$endpoint" --argjson p "$port" --arg id "$uuid" --arg path "$path" --arg ps "$name" --arg tls "$tls" --arg host "${argo:-$(jq -r '.protocols.vmess.domain' "$STATE_FILE")}" '{v:"2",ps:$ps,add:$add,port:($p|tostring),id:$id,aid:"0",net:"ws",type:"none",host:$host,path:$path,tls:(if $tls=="true" then "tls" else "" end),sni:$host}' | base64 | tr -d '\n')";;
-      hy2) password=$(jq -r '.protocols.hy2.password' "$STATE_FILE"); sni=$(jq -r '.protocols.hy2.domain' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); line="hysteria2://$(urlencode "$password")@${endpoint}:${port}?security=tls&sni=${sni}&insecure=1$([[ -n "$hop" ]] && printf '&mport=%s' "$hop")#$(urlencode "$name")";;
-      tuic) uuid=$(jq -r '.protocols.tuic.uuid' "$STATE_FILE"); password=$(jq -r '.protocols.tuic.password' "$STATE_FILE"); sni=$(jq -r '.protocols.tuic.domain' "$STATE_FILE"); line="tuic://${uuid}:$(urlencode "$password")@${endpoint}:${port}?congestion_control=bbr&sni=${sni}&insecure=1#$(urlencode "$name")";;
-      anytls) password=$(jq -r '.protocols.anytls.password' "$STATE_FILE"); sni=$(jq -r '.protocols.anytls.domain' "$STATE_FILE"); line="anytls://$(urlencode "$password")@${endpoint}:${port}?sni=${sni}&insecure=1#$(urlencode "$name")";;
+      hy2) password=$(jq -r '.protocols.hy2.password' "$STATE_FILE"); sni=$(jq -r '.protocols.hy2.domain' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); line="hysteria2://$(urlencode "$password")@${endpoint}:${port}?security=tls&sni=${sni}&insecure=${insecure}$([[ -n "$hop" ]] && printf '&mport=%s' "$hop")#$(urlencode "$name")";;
+      tuic) uuid=$(jq -r '.protocols.tuic.uuid' "$STATE_FILE"); password=$(jq -r '.protocols.tuic.password' "$STATE_FILE"); sni=$(jq -r '.protocols.tuic.domain' "$STATE_FILE"); line="tuic://${uuid}:$(urlencode "$password")@${endpoint}:${port}?congestion_control=bbr&sni=${sni}&insecure=${insecure}#$(urlencode "$name")";;
+      anytls) password=$(jq -r '.protocols.anytls.password' "$STATE_FILE"); sni=$(jq -r '.protocols.anytls.domain' "$STATE_FILE"); line="anytls://$(urlencode "$password")@${endpoint}:${port}?sni=${sni}&insecure=${insecure}#$(urlencode "$name")";;
     esac
     printf '%s\n' "$line" >> "$out"
     ob=$(client_outbound_for "$tag" "$host"); jq --argjson x "$ob" '.outbounds += [$x]' "$client" > "$client.next" && mv "$client.next" "$client"
@@ -470,34 +483,99 @@ rotate_reality_keys(){
   [[ -n "$priv" && -n "$pub" ]] || { red '密钥生成失败。'; return 0; }
   apply_state "$(jq --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '.protocols.vless.private_key=$priv | .protocols.vless.public_key=$pub | .protocols.vless.short_id=$sid' "$STATE_FILE")"
 }
-probe_reality_sni(){
-  local host=$1 out
-  out=$(timeout 10 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 -groups X25519 -verify_hostname "$host" -verify_return_error </dev/null 2>&1) || return 1
-  grep -q 'Verify return code: 0 (ok)' <<<"$out" && grep -q 'ALPN protocol: h2' <<<"$out"
+probe_reality_once(){ # host [sample-number] -> handshake milliseconds
+  local host=$1 start end out
+  start=$(date +%s%3N)
+  out=$(timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 -groups X25519 -verify_hostname "$host" -verify_return_error </dev/null 2>&1) || return 1
+  grep -q 'Verify return code: 0 (ok)' <<<"$out" || return 1
+  grep -q 'ALPN protocol: h2' <<<"$out" || return 1
+  end=$(date +%s%3N)
+  printf '%s\n' "$((end - start))"
+}
+scan_reality_candidates(){ # optional candidate arguments; outputs host, successes, average-ms, jitter-ms
+  local work host file sample latency successes total min max avg jitter
+  local -a candidates=("$@") pids=()
+  ((${#candidates[@]})) || candidates=("${REALITY_CANDIDATES[@]}")
+  work=$(tmpdir)
+  blue "正在从当前 VPS 并发扫描 ${#candidates[@]} 个 Reality 目标，每个采样 ${REALITY_SCAN_SAMPLES} 次..." >&2
+  for host in "${candidates[@]}"; do
+    file="$work/$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_').result"
+    (
+      successes=0; total=0; min=2147483647; max=0
+      for ((sample=1; sample<=REALITY_SCAN_SAMPLES; sample++)); do
+        if latency=$(probe_reality_once "$host" "$sample"); then
+          successes=$((successes + 1)); total=$((total + latency))
+          ((latency < min)) && min=$latency
+          ((latency > max)) && max=$latency
+        fi
+      done
+      if ((successes > 0)); then
+        avg=$((total / successes)); jitter=$((max - min))
+      else
+        avg=999999; jitter=999999
+      fi
+      printf '%s\t%d\t%d\t%d\n' "$host" "$successes" "$avg" "$jitter" > "$file"
+    ) &
+    pids+=("$!")
+  done
+  for sample in "${pids[@]}"; do wait "$sample" || true; done
+  # Prefer fully successful and low-latency targets; require at least 2/3 successful samples.
+  awk -F '\t' -v minimum="$((REALITY_SCAN_SAMPLES - 1))" '$2 >= minimum' "$work"/*.result |
+    sort -t $'\t' -k2,2nr -k3,3n -k4,4n |
+    head -n 5
+}
+choose_scanned_reality_sni(){
+  local results choice i host successes avg jitter candidate
+  local -a rows=()
+  results=$(scan_reality_candidates) || true
+  [[ -n "$results" ]] || { red '10 个候选均未达到稳定性要求，原配置未改变。'; return 0; }
+  while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
+  echo '扫描结果（可用性优先，其次平均延迟和抖动）：'
+  for ((i=0; i<${#rows[@]}; i++)); do
+    IFS=$'\t' read -r host successes avg jitter <<<"${rows[$i]}"
+    printf '%d %-24s 平均 %4d ms  抖动 %4d ms  成功 %d/%d\n' "$((i + 1))" "$host" "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
+  done
+  echo '0 返回上一级'
+  ask '选择扫描目标：' choice
+  cancel_input "$choice" && return 0
+  [[ "$choice" =~ ^[1-5]$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
+  IFS=$'\t' read -r host successes avg jitter <<<"${rows[$((choice - 1))]}"
+  candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
+  apply_state "$candidate"
 }
 set_reality_sni(){
-  local choice host candidate
-  echo 'Reality SNI 候选（取自 3x-ui v3.4.2 默认列表前五项）：'
-  echo '1 www.cloudflare.com  2 www.microsoft.com  3 www.amazon.com'
-  echo '4 aws.amazon.com       5 www.samsung.com    6 自定义'
-  echo '0 返回上一级'
+  local choice host results candidate
+  echo 'Reality SNI：1 扫描 10 个默认目标并选择  2 扫描自定义目标  0 返回上一级'
   ask '选择：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
-    1) host=www.cloudflare.com;; 2) host=www.microsoft.com;; 3) host=www.amazon.com;;
-    4) host=aws.amazon.com;; 5) host=www.samsung.com;;
-    6)
+    1) choose_scanned_reality_sni;;
+    2)
       ask '自定义 Reality SNI（回车/0 返回上一级）：' host
       cancel_input "$host" && return 0
       valid_host "$host" || { red '域名格式无效。'; return 0; }
       [[ "$host" != *:* && ! "$host" =~ ^[0-9.]+$ ]] || { red 'Reality SNI 必须填写域名。'; return 0; }
+      results=$(scan_reality_candidates "$host") || true
+      [[ -n "$results" ]] || { red '该目标未通过稳定性和 Reality 兼容性检测，原配置未改变。'; return 0; }
+      candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
+      apply_state "$candidate"
       ;;
-    *) red '无效输入。'; return 0;;
+    *) red '无效输入。';;
   esac
-  blue "正在检测 ${host} 的 TLS 1.3、HTTP/2、X25519 和证书..."
-  probe_reality_sni "$host" || { red '该域名未通过 Reality 兼容性检测，原配置未改变。'; return 0; }
-  candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
-  apply_state "$candidate"
+}
+certificate_matches_domain(){ openssl x509 -in "$1" -noout -checkhost "$2" >/dev/null 2>&1; }
+certificate_covers_enabled_domains(){
+  local cert=$1 tag domain enabled
+  for tag in vmess hy2 tuic anytls; do
+    enabled=$(jq -r --arg t "$tag" '.protocols[$t].enabled' "$STATE_FILE")
+    [[ "$tag" != vmess || $(jq -r '.protocols.vmess.tls' "$STATE_FILE") == true ]] || continue
+    [[ "$enabled" == true ]] || continue
+    domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")
+    certificate_matches_domain "$cert" "$domain" || {
+      red "证书不覆盖已启用的 $(protocol_label "$tag") 域名：${domain}"
+      return 1
+    }
+  done
 }
 set_certificate(){
   local cert key cert_pub key_pub insecure candidate
@@ -514,8 +592,67 @@ set_certificate(){
   ask '选择：' insecure
   cancel_input "$insecure" && return 0
   case "$insecure" in 1) insecure=true;;2) insecure=false;;*) red '无效输入。'; return 0;;esac
+  [[ "$insecure" == true ]] || certificate_covers_enabled_domains "$cert" || {
+    red '请先在证书管理中把协议域名改为证书覆盖的域名，再重新导入。'
+    return 0
+  }
   candidate=$(jq --arg cert "$cert" --arg key "$key" --argjson insecure "$insecure" '.certificate.cert=$cert | .certificate.key=$key | .certificate.insecure=$insecure' "$STATE_FILE")
   apply_state "$candidate"
+}
+show_certificate(){
+  local cert
+  cert=$(jq -r '.certificate.cert' "$STATE_FILE")
+  echo '当前全局 TLS 证书：'
+  jq '{certificate,domains:{vmess:.protocols.vmess.domain,hy2:.protocols.hy2.domain,tuic:.protocols.tuic.domain,anytls:.protocols.anytls.domain}}' "$STATE_FILE"
+  if [[ -r "$cert" ]]; then
+    openssl x509 -in "$cert" -noout -subject -issuer -dates
+    openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null || true
+  else
+    yellow '当前证书文件不可读。'
+  fi
+}
+set_tls_domain(){
+  local tag=$1 domain cert insecure candidate
+  ask '证书域名（回车/0 返回上一级）：' domain
+  cancel_input "$domain" && return 0
+  valid_host "$domain" && [[ "$domain" != *:* && ! "$domain" =~ ^[0-9.]+$ ]] || { red '必须填写有效域名。'; return 0; }
+  cert=$(jq -r '.certificate.cert' "$STATE_FILE"); insecure=$(jq -r '.certificate.insecure' "$STATE_FILE")
+  if [[ -r "$cert" ]] && ! certificate_matches_domain "$cert" "$domain"; then
+    if [[ "$insecure" == false ]]; then
+      red '当前受信证书不覆盖该域名，拒绝修改。请先导入匹配证书。'
+      return 0
+    fi
+    yellow '当前为跳过证书校验模式，证书未覆盖该域名；客户端仍会跳过验证。'
+  fi
+  if [[ "$tag" == all ]]; then
+    candidate=$(jq --arg d "$domain" '.protocols.vmess.domain=$d | .protocols.hy2.domain=$d | .protocols.tuic.domain=$d | .protocols.anytls.domain=$d' "$STATE_FILE")
+  else
+    candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
+  fi
+  apply_state "$candidate"
+}
+tls_domain_menu(){
+  local choice tag
+  while :; do
+    echo '证书域名：1 Vmess-WS  2 Hysteria2  3 TUIC v5  4 AnyTLS  5 全部统一  0 返回上一级'
+    ask '选择：' choice
+    case "$choice" in
+      1)tag=vmess;;2)tag=hy2;;3)tag=tuic;;4)tag=anytls;;5)tag=all;;0|'')return 0;;*)red '无效输入。'; continue;;
+    esac
+    set_tls_domain "$tag"
+  done
+}
+certificate_menu(){
+  local choice
+  while :; do
+    echo '证书管理：1 查看证书和域名  2 导入证书/私钥  3 配置协议证书域名  4 运行 ACME 签发脚本  0 返回上一级'
+    ask '选择：' choice
+    case "$choice" in
+      1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
+      4)acme; yellow 'ACME 签发完成后，请回到“导入证书/私钥”绑定生成的证书路径。';;
+      0|'')return 0;;*)red '无效输入。';;
+    esac
+  done
 }
 set_hy2_hop(){
   local choice x start end candidate
@@ -605,18 +742,18 @@ specialty_menu(){
       vmess)
         echo '专项参数：1 WS Path  2 TLS  3 CDN 地址  4 Argo 固定隧道  5 证书域名  0 返回上一级'
         ask '选择：' choice
-        case "$choice" in 1)set_protocol vmess path 'WS Path（以 / 开头）：';;2)set_bool vmess tls;;3)set_protocol vmess cdn 'CDN 地址：';;4)set_argo;;5)set_protocol vmess domain '证书域名：';;0|'')return 0;;*)red '无效输入。';;esac
+        case "$choice" in 1)set_protocol vmess path 'WS Path（以 / 开头）：';;2)set_bool vmess tls;;3)set_protocol vmess cdn 'CDN 地址：';;4)set_argo;;5)set_tls_domain vmess;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       hy2)
         echo '专项参数：1 证书域名  2 上行 Mbps  3 下行 Mbps  4 UDP 端口跳跃  0 返回上一级'
         ask '选择：' choice
-        case "$choice" in 1)set_protocol hy2 domain '证书域名：';;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;0|'')return 0;;*)red '无效输入。';;esac
+        case "$choice" in 1)set_tls_domain hy2;;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       tuic|anytls)
         echo '专项参数：1 证书域名  0 返回上一级'
         echo '普通 TLS 的 SNI 应匹配实际证书域名，不使用 Reality 的伪装候选。'
         ask '选择：' choice
-        case "$choice" in 1)set_protocol "$tag" domain '证书域名：';;0|'')return 0;;*)red '无效输入。';;esac
+        case "$choice" in 1)set_tls_domain "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
   done
@@ -640,11 +777,11 @@ protocol_menu(){
 }
 
 configure_menu(){
-  while :; do echo; echo '配置菜单：1 查看节点 2 管理协议 3 对外地址 4 二维码 5 重新生成订阅 6 证书路径 0 返回'; ask '选择：' m
+  while :; do echo; echo '配置菜单：1 查看节点 2 管理协议 3 对外地址 4 二维码 5 重新生成订阅 6 证书管理 0 返回'; ask '选择：' m
     case "$m" in
       1) show_nodes;;2) protocol_menu;;3) set_address;;4) show_qr;;
       5) if confirm_change; then generate_subscriptions; green '订阅已更新。'; fi;;
-      6)set_certificate;;0|'') return 0;;*) red '无效输入。';;
+      6)certificate_menu;;0|'') return 0;;*) red '无效输入。';;
     esac
   done
 }

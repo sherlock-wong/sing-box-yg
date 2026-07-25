@@ -34,10 +34,10 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 
 1. `sb → 2 → 2`，选择协议后用“启用/停用”在安装后增删协议。
 2. 在同一协议菜单用“名称”“端口”“凭据”修改节点名、监听端口和 UUID/密码。
-3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。SNI 菜单提供 3x-ui v3.4.2 默认候选的前五项：`www.cloudflare.com`、`www.microsoft.com`、`www.amazon.com`、`aws.amazon.com`、`www.samsung.com`，另可自定义。选中后脚本会从当前 VPS 检查 TLS 1.3、HTTP/2、X25519 和证书，未通过就保持原配置。
+3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”会从当前 VPS 并发扫描 3x-ui v3.4.2 的 10 个默认候选，每个目标执行三次 TLS 1.3、HTTP/2、X25519 和证书检测。脚本淘汰成功不足两次的目标，按成功次数、平均握手耗时及抖动排序，只显示前五项供选择；也可以单独扫描自定义域名。
 4. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
 5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
-6. `sb → 2 → 6` 可切换全局证书和私钥路径；证书格式、公私钥匹配和最终 Sing-box 配置都必须验证成功。
+6. `sb → 2 → 6` 是统一的证书管理菜单，可查看当前证书/SAN/有效期，导入全局证书和私钥，为 Vmess、Hy2、TUIC、AnyTLS 分别或统一设置证书域名，也可运行锁定版本的 ACME 签发脚本。ACME 完成后需从证书管理菜单导入生成的证书和私钥路径；脚本会验证证书格式、公私钥匹配、受信证书是否覆盖所填域名以及最终 Sing-box 配置。
 
 配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
 
