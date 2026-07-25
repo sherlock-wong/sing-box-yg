@@ -36,7 +36,7 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 
 1. `sb → 2 → 2`，选择协议后用“启用/停用”在安装后增删协议。
 2. 在同一协议菜单用“名称”“端口”“凭据”修改节点名、监听端口和 UUID/密码。
-3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”会从当前 VPS 并发扫描 3x-ui v3.4.2 的 10 个默认候选，每个目标执行三次 TLS 1.3、HTTP/2、X25519 和证书检测。脚本淘汰成功不足两次的目标，按成功次数、平均握手耗时及抖动排序，只显示前五项供选择；也可以单独扫描自定义域名。
+3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”会从当前 VPS 并发扫描 3x-ui v3.4.2 的 10 个默认候选，验证 TLS 1.3、HTTP/2、X25519 系列密钥交换和证书信任，并显示与 3x-ui 对齐的 TLS、ALPN、密钥交换、证书及延迟字段。延迟按 `DNS + TCP + TLS 握手完成` 计时，不再包含 OpenSSL 进程退出和连接关闭时间；每个目标采样三次，淘汰成功不足两次的目标，再按成功次数、平均握手延迟及抖动排序，只显示前五项供选择。也可以单独扫描自定义域名。
 4. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
 5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
 6. `sb → 2 → 6` 是多证书管理。证书库可以保存多组证书和私钥，Vmess、Hy2、AnyTLS 各自记录独立的证书绑定。选项 `4` 是域名证书向导：选择协议或全部协议，再填写证书域名。脚本先检查证书库以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；没有证书时可运行锁定版 ACME 或手动指定已有证书。验证成功后会复制到 `/etc/s-box/certificates/<证书ID>/`，加入证书库并自动绑定。选项 `5` 可随时为某个协议改选证书；如果新证书不覆盖当前 SNI，脚本会要求同时填写该证书覆盖的新域名。

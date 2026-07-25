@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.5'
+SCRIPT_VERSION='v26.7.25-fork.6'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 FORK_BRANCH="${SBYG_CHANNEL:-main}"
@@ -725,30 +725,49 @@ rotate_reality_keys(){
   [[ -n "$priv" && -n "$pub" ]] || { red '密钥生成失败。'; return 0; }
   apply_state "$(jq --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '.protocols.vless.private_key=$priv | .protocols.vless.public_key=$pub | .protocols.vless.short_id=$sid' "$STATE_FILE")"
 }
-now_millis(){
-  local value
-  value=$(date +%s%3N)
-  [[ "$value" =~ ^[0-9]+$ ]] || value="$(date +%s)000"
-  printf '%s\n' "$value"
+probe_reality_once(){ # host [sample-number] -> DNS + TCP + TLS handshake milliseconds
+  local host=$1 timing
+  timing=$(curl --noproxy '*' -sS -I -o /dev/null --connect-timeout 8 --max-time 8 \
+    --tlsv1.3 --tls-max 1.3 --http2 -w '%{time_appconnect}' "https://${host}/" 2>/dev/null || true)
+  if [[ ! "$timing" =~ ^0*[1-9][0-9]*\.[0-9]+$|^0+\.[0-9]*[1-9][0-9]*$ ]]; then
+    timing=$(curl --noproxy '*' -sS -I -o /dev/null --connect-timeout 8 --max-time 8 \
+      --tlsv1.3 --tls-max 1.3 -w '%{time_appconnect}' "https://${host}/" 2>/dev/null || true)
+  fi
+  if [[ ! "$timing" =~ ^0*[1-9][0-9]*\.[0-9]+$|^0+\.[0-9]*[1-9][0-9]*$ ]]; then
+    timing=$(curl --noproxy '*' -sS -I -o /dev/null --connect-timeout 8 --max-time 8 \
+      -w '%{time_appconnect}' "https://${host}/" 2>/dev/null || true)
+  fi
+  [[ "$timing" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
+  awk -v seconds="$timing" 'BEGIN {
+    milliseconds=int(seconds*1000+0.5)
+    if (milliseconds < 1) exit 1
+    print milliseconds
+  }'
 }
-probe_reality_once(){ # host [sample-number] -> handshake milliseconds
-  local host=$1 start end output
+probe_reality_metadata(){ # host -> TLS-version, ALPN, key-exchange, certificate-subject
+  local host=$1 output tls alpn curve cert
   output=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-reality.XXXXXX")
-  start=$(now_millis)
-  if ! timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 -groups X25519 -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1; then
+  if ! timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 \
+    -alpn 'h2,http/1.1' -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1; then
     rm -f "$output"
     return 1
   fi
-  if ! grep -aq 'Verify return code: 0 (ok)' "$output" || ! grep -aq 'ALPN protocol: h2' "$output"; then
+  tr -d '\000' < "$output" > "$output.text" && mv "$output.text" "$output"
+  grep -aq 'Verify return code: 0 (ok)' "$output" || { rm -f "$output"; return 1; }
+  tls=$(sed -n 's/^New, TLSv\([^,]*\),.*/\1/p' "$output" | head -n1)
+  alpn=$(sed -n 's/^ALPN protocol: //p' "$output" | head -n1)
+  curve=$(sed -n 's/^Server Temp Key: \([^,]*\).*/\1/p' "$output" | head -n1)
+  cert=$(sed -n 's/^subject=.*CN *= *\([^,]*\).*/\1/p' "$output" | head -n1)
+  [[ "$tls" == 1.3 && "$alpn" == h2 && "$curve" == X25519* ]] || {
     rm -f "$output"
     return 1
-  fi
-  end=$(now_millis)
+  }
+  [[ -n "$cert" ]] || cert=$host
   rm -f "$output"
-  printf '%s\n' "$((end - start))"
+  printf '%s\t%s\t%s\t%s\n' "$tls" "$alpn" "$curve" "$cert"
 }
-scan_reality_candidates(){ # optional candidate arguments; outputs host, successes, average-ms, jitter-ms
-  local work host file sample latency successes total min max avg jitter
+scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
+  local work host file sample latency metadata tls alpn curve cert successes total min max avg jitter
   local -a candidates=("$@") pids=()
   ((${#candidates[@]})) || candidates=("${REALITY_CANDIDATES[@]}")
   work=$(tmpdir)
@@ -756,6 +775,8 @@ scan_reality_candidates(){ # optional candidate arguments; outputs host, success
   for host in "${candidates[@]}"; do
     file="$work/$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_').result"
     (
+      metadata=$(probe_reality_metadata "$host") || exit 0
+      IFS=$'\t' read -r tls alpn curve cert <<<"$metadata"
       successes=0; total=0; min=2147483647; max=0
       for ((sample=1; sample<=REALITY_SCAN_SAMPLES; sample++)); do
         if latency=$(probe_reality_once "$host" "$sample"); then
@@ -769,7 +790,8 @@ scan_reality_candidates(){ # optional candidate arguments; outputs host, success
       else
         avg=999999; jitter=999999
       fi
-      printf '%s\t%d\t%d\t%d\n' "$host" "$successes" "$avg" "$jitter" > "$file"
+      printf '%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
+        "$host" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
     ) &
     pids+=("$!")
   done
@@ -780,21 +802,24 @@ scan_reality_candidates(){ # optional candidate arguments; outputs host, success
     head -n 5
 }
 choose_scanned_reality_sni(){
-  local results choice i host successes avg jitter candidate
+  local results choice i host successes avg jitter tls alpn curve cert candidate
   local -a rows=()
   results=$(scan_reality_candidates) || true
   [[ -n "$results" ]] || { red '10 个候选均未达到稳定性要求，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
-  echo '扫描结果（可用性优先，其次平均延迟和抖动）：'
+  echo '扫描结果（延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动）：'
+  printf '%-3s %-23s %-5s %-4s %-5s %-18s %-24s %-8s %-8s %-5s\n' \
+    '序号' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r host successes avg jitter <<<"${rows[$i]}"
-    printf '%d %-24s 平均 %4d ms  抖动 %4d ms  成功 %d/%d\n' "$((i + 1))" "$host" "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
+    IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
+    printf '%-3d %-23s %-5s %-4s %-5s %-18s %-24s %4d ms %4d ms %d/%d\n' \
+      "$((i + 1))" "$host" '可用' "$tls" "$alpn" "$curve" "$cert" "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
   done
   echo '0 返回上一级'
   ask '选择扫描目标：' choice
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-5]$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
-  IFS=$'\t' read -r host successes avg jitter <<<"${rows[$((choice - 1))]}"
+  IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
   candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
   apply_state "$candidate"
 }

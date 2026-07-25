@@ -1,3 +1,7 @@
+v26.7.25-fork.6 更新内容：
+
+VPS fork：Reality 扫描对齐 3x-ui 的握手计时边界，并显示 TLS、ALPN、密钥交换、证书、平均延迟、抖动和成功率。
+
 v26.7.25-fork.5 更新内容：
 
 VPS fork：支持多证书库及 Vmess、Hysteria2、AnyTLS 按协议选择证书；完整移除 TUIC v5，并迁移旧状态。

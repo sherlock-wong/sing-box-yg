@@ -271,11 +271,18 @@ fi
 [[ ${#REALITY_CANDIDATES[@]} -eq 10 ]]
 [[ ${REALITY_CANDIDATES[0]} == www.cloudflare.com && ${REALITY_CANDIDATES[9]} == dl.google.com ]]
 # Binary/NUL bytes in openssl output stay in a temporary file and never enter a Bash variable.
-timeout(){ printf 'Verify return code: 0 (ok)\0binary\nALPN protocol: h2\n'; }
-probe_latency=$(probe_reality_once binary.example 1)
-[[ "$probe_latency" =~ ^[0-9]+$ ]]
+timeout(){
+  printf 'New, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256\nServer Temp Key: X25519, 253 bits\n'
+  printf 'subject=CN = binary.example\0binary\nALPN protocol: h2\nVerify return code: 0 (ok)\n'
+}
+probe_metadata=$(probe_reality_metadata binary.example)
+[[ "$probe_metadata" == $'1.3\th2\tX25519\tbinary.example' ]]
 unset -f timeout
+curl(){ printf '0.013000'; }
+[[ $(probe_reality_once fast.example 1) == 13 ]]
+unset -f curl
 saved_probe_reality_once=$(declare -f probe_reality_once)
+saved_probe_reality_metadata=$(declare -f probe_reality_metadata)
 probe_reality_once(){
   local host=$1 sample=$2
   case "$host" in
@@ -285,16 +292,27 @@ probe_reality_once(){
     *) return 1;;
   esac
 }
+probe_reality_metadata(){
+  case "$1" in
+    fast.example|slow.example|flaky.example) printf '1.3\th2\tX25519\t%s\n' "$1";;
+    *) return 1;;
+  esac
+}
 ranked=$(scan_reality_candidates slow.example flaky.example bad.example fast.example)
 [[ $(awk -F '\t' 'NR==1{print $1}' <<<"$ranked") == fast.example ]]
 [[ $(awk -F '\t' 'NR==2{print $1}' <<<"$ranked") == slow.example ]]
 [[ $(awk -F '\t' 'NR==3{print $1}' <<<"$ranked") == flaky.example ]]
+[[ $(awk -F '\t' 'NR==1{print $5,$6,$7,$8}' <<<"$ranked") == '1.3 h2 X25519 fast.example' ]]
 eval "$saved_probe_reality_once"
+eval "$saved_probe_reality_metadata"
 
 saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
 captured_state=
 apply_state(){ captured_state=$1; }
-scan_reality_candidates(){ printf 'www.cloudflare.com\t3\t42\t6\nwww.microsoft.com\t3\t55\t9\n'; }
+scan_reality_candidates(){
+  printf 'www.cloudflare.com\t3\t42\t6\t1.3\th2\tX25519MLKEM768\twww.cloudflare.com\n'
+  printf 'www.microsoft.com\t3\t55\t9\t1.3\th2\tX25519\twww.microsoft.com\n'
+}
 set_reality_sni <<< $'1\n1'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
 validate_state "$captured_state"
