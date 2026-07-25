@@ -481,7 +481,7 @@ ensure_current_state_schema(){
   supported=$(jq '[.protocols[]|select(.enabled)]|length' <<<"$normalized")
   if ((supported == 0)); then
     red '旧状态仅启用了已移除的 TUIC v5，无法自动迁移。请卸载后重新安装其他协议。'
-    return 1
+    return 2
   fi
   yellow '正在迁移旧状态：建立多证书库并移除 TUIC v5。'
   printf '%s\n' "$normalized" | commit_state || return 1
@@ -1305,8 +1305,20 @@ uninstall(){
 }
 
 main(){
+  local migration_rc migration_choice
   need_root; if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
-  ensure_current_state_schema || die '状态迁移失败，原运行配置已保留。'
+  if ensure_current_state_schema; then
+    :
+  else
+    migration_rc=$?
+    if [[ "$migration_rc" == 2 ]]; then
+      echo '1 卸载旧 TUIC 安装  0 返回终端'
+      ask '选择：' migration_choice
+      [[ "$migration_choice" == 1 ]] && { uninstall && exit 0; }
+      exit 0
+    fi
+    die '状态迁移失败，原运行配置已保留。'
+  fi
   check_version
   while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 域名证书/ACME  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
     case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) if uninstall; then exit 0; fi;;0) exit 0;;*) red '无效输入。';;esac

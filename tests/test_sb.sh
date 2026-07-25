@@ -151,6 +151,18 @@ jq -e '
   .certificates.default.cert != null
 ' <<<"$migrated_state" >/dev/null
 validate_state "$migrated_state"
+set_case_dir migration-tuic-only
+schema1_tuic_only=$(jq '
+  .protocols |= with_entries(.value.enabled=false) |
+  .protocols.tuic.enabled=true
+' <<<"$schema1_state")
+printf '%s\n' "$schema1_tuic_only" > "$STATE_FILE"
+if ensure_current_state_schema; then
+  echo 'TUIC-only migration unexpectedly succeeded' >&2
+  exit 1
+else
+  [[ $? -eq 2 ]]
+fi
 ss(){ printf 'udp UNCONN 0 0 [::]:28000 [::]:*\n'; }
 ! port_available 28000
 port_available 28001
