@@ -37,11 +37,22 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”会从当前 VPS 并发扫描 3x-ui v3.4.2 的 10 个默认候选，每个目标执行三次 TLS 1.3、HTTP/2、X25519 和证书检测。脚本淘汰成功不足两次的目标，按成功次数、平均握手耗时及抖动排序，只显示前五项供选择；也可以单独扫描自定义域名。
 4. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
 5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
-6. `sb → 2 → 6` 是统一的证书管理菜单，可查看当前证书/SAN/有效期，导入全局证书和私钥，为 Vmess、Hy2、TUIC、AnyTLS 分别或统一设置证书域名，也可运行锁定版本的 ACME 签发脚本。ACME 完成后需从证书管理菜单导入生成的证书和私钥路径；脚本会验证证书格式、公私钥匹配、受信证书是否覆盖所填域名以及最终 Sing-box 配置。
+6. `sb → 2 → 6` 是统一的证书管理菜单，可查看当前证书、SAN、有效期、校验模式和固定值，导入全局证书和私钥，为 Vmess、Hy2、TUIC、AnyTLS 分别或统一设置证书域名，也可运行锁定版本的 ACME 签发脚本。ACME 完成后需从证书管理菜单导入生成的证书和私钥路径，并选择“系统 CA 验证”；脚本会验证证书格式、公私钥匹配、受信证书是否覆盖所填域名以及最终 Sing-box 配置。
 
 配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
 
-AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书覆盖的域名相符（自签证书则由客户端跳过验证），没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
+AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书域名相符，没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
+
+### AnyTLS 域名与证书
+
+推荐为 AnyTLS 准备独立域名，例如 `anytls.example.com`。域名托管在 Cloudflare 时，A/AAAA 记录必须保持“仅 DNS（灰云）”；普通小黄云代理的是 HTTP/HTTPS，不能透传 AnyTLS 的原始 TCP。可以使用 Cloudflare DNS 验证签发 ACME 证书，DNS 托管和小黄云代理是两回事。
+
+证书管理提供两种客户端校验模式：
+
+1. **系统 CA 验证（推荐）**：适合 Let's Encrypt 等公开受信的 ACME 证书。分享链接不生成 `insecure=1` 或固定值，Sing-box 和 Mihomo 客户端均执行正常证书链与域名验证。ACME 续期不要求客户端重新导入订阅。
+2. **自签证书固定 SHA256**：适合没有可用受信证书的情况。脚本为 Xray/v2rayN 的 AnyTLS 链接生成证书 DER SHA256 参数 `pcs`，并为 Sing-box 1.13+ 客户端生成 Base64 格式的 `certificate_public_key_sha256`；二者格式不同，不能混用。Mihomo 目前仍使用其 `skip-cert-verify` 兼容项，因此跨客户端场景仍优先选择受信证书。固定证书一旦更换，必须重新生成并在所有客户端重新导入订阅。
+
+新安装的备用自签证书包含匹配的 SAN、`CA:FALSE`、服务端 KeyUsage，并默认进入固定模式，不再给 AnyTLS 分享链接输出仅有 `insecure=1` 的配置。已有状态文件若缺少 `certificate.mode`，下次应用时会根据原来的 `insecure` 值迁移：`true` 迁移为 `pinned`，`false` 迁移为 `trusted`。固定值无法计算时脚本拒绝生成不安全的客户端配置并回滚本次状态修改。
 
 ## 运维与故障处理
 

@@ -106,19 +106,36 @@ check_case multi 1.13.14 "$CORE_DEFAULT" 3 vless hy2 anytls
 check_case five 1.13.14 "$CORE_DEFAULT" 5 vless vmess hy2 tuic anytls
 check_case legacy 1.10.7 "$CORE_110" 4 vless vmess hy2 tuic
 
+# New self-signed certificates are leaf certificates with SAN and both client-specific pins.
+five_state=$(cat "$TEST_ROOT/five/protocols.json")
+[[ $(jq -r '.certificate.mode' <<<"$five_state") == pinned ]]
+five_cert=$(jq -r '.certificate.cert' <<<"$five_state")
+five_cert_text=$(openssl x509 -in "$five_cert" -noout -text)
+grep -q 'DNS:www.bing.com' <<<"$five_cert_text"
+grep -q 'CA:FALSE' <<<"$five_cert_text"
+expected_der_pin=$(certificate_der_sha256 "$five_cert")
+expected_spki_pin=$(certificate_spki_sha256 "$five_cert")
+anytls_link=$(grep '^anytls://' "$TEST_ROOT/five/subscription.txt")
+[[ "$anytls_link" == *"&pcs=${expected_der_pin}"* && "$anytls_link" != *'insecure='* ]]
+jq -e --arg pin "$expected_spki_pin" '
+  .outbounds[] | select(.type=="anytls") |
+  .tls.insecure == true and .tls.certificate_public_key_sha256 == [$pin]
+' "$TEST_ROOT/five/sing-box-client.json" >/dev/null
+
 # 1.10 never accepts AnyTLS.
 legacy_state=$(cat "$TEST_ROOT/legacy/protocols.json")
 legacy_invalid=$(jq '.protocols.anytls.enabled=true | .protocols.anytls.port=26000' <<<"$legacy_state")
 ! validate_state "$legacy_invalid"
 
-# Duplicate/invalid ports and a malformed WS path are rejected.
-five_state=$(cat "$TEST_ROOT/five/protocols.json")
+# Duplicate/invalid ports, certificate modes and a malformed WS path are rejected.
 duplicate=$(jq '.protocols.vmess.port=.protocols.vless.port' <<<"$five_state")
 ! validate_state "$duplicate"
 bad_path=$(jq '.protocols.vmess.path="missing-slash"' <<<"$five_state")
 ! validate_state "$bad_path"
 bad_port=$(jq '.protocols.hy2.port=70000' <<<"$five_state")
 ! validate_state "$bad_port"
+bad_cert_mode=$(jq '.certificate.mode="trusted" | .certificate.insecure=true' <<<"$five_state")
+! validate_state "$bad_cert_mode"
 ss(){ printf 'udp UNCONN 0 0 [::]:28000 [::]:*\n'; }
 ! port_available 28000
 port_available 28001
@@ -210,7 +227,12 @@ saved_certificate_matches_domain=$(declare -f certificate_matches_domain)
 certificate_matches_domain(){ [[ "$2" == tls.example.com ]]; }
 certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
 generate_subscriptions
-[[ $(grep -c 'insecure=0' "$STATE_DIR/subscription.txt") -eq 3 ]]
+trusted_anytls_link=$(grep '^anytls://' "$STATE_DIR/subscription.txt")
+[[ "$trusted_anytls_link" != *'insecure='* && "$trusted_anytls_link" != *'pcs='* ]]
+jq -e '
+  .outbounds[] | select(.type=="anytls") |
+  .tls.insecure == false and (.tls | has("certificate_public_key_sha256") | not)
+' "$STATE_DIR/sing-box-client.json" >/dev/null
 jq -e '[.proxies[] | select(.type=="hysteria2" or .type=="tuic" or .type=="anytls") | ."skip-cert-verify"] | all(. == false)' "$STATE_DIR/mihomo.yaml" >/dev/null
 bad_cert_state=$(jq '.protocols.anytls.domain="other.example.com"' <<<"$cert_state")
 printf '%s\n' "$bad_cert_state" > "$STATE_FILE"

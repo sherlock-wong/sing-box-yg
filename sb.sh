@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.1'
+SCRIPT_VERSION='v26.7.25-fork.2'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 FORK_BRANCH="${SBYG_CHANNEL:-main}"
@@ -56,6 +56,30 @@ need_root(){ [[ $EUID -eq 0 ]] || die '请使用 root 运行。'; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "缺少依赖：$1"; }
 sha256(){ sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; }
 verify(){ [[ "$(sha256 "$1" | awk '{print $1}')" == "$2" ]] || die "完整性校验失败：$3（已保留原配置，未执行文件）"; }
+certificate_mode(){ jq -r '.certificate.mode // (if .certificate.insecure then "pinned" else "trusted" end)' "$1"; }
+certificate_der_sha256(){
+  openssl x509 -in "$1" -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
+}
+certificate_spki_sha256(){
+  openssl x509 -in "$1" -pubkey -noout 2>/dev/null |
+    openssl pkey -pubin -outform DER 2>/dev/null |
+    openssl dgst -sha256 -binary |
+    openssl base64 -A
+}
+client_certificate_pin(){
+  local mode cert pin core major minor
+  core=$(jq -r '.core' "$STATE_FILE")
+  IFS=. read -r major minor _ <<<"$core"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( major > 1 || (major == 1 && minor >= 13) )) || return 0
+  mode=$(certificate_mode "$STATE_FILE")
+  [[ "$mode" == pinned ]] || return 0
+  cert=$(jq -r '.certificate.cert' "$STATE_FILE")
+  [[ -r "$cert" ]] || { red '固定模式的证书不可读，拒绝生成不安全的客户端配置。' >&2; return 1; }
+  pin=$(certificate_spki_sha256 "$cert") || true
+  [[ "$pin" =~ ^[A-Za-z0-9+/]{43}=$ ]] || { red '证书公钥 SHA256 计算失败，拒绝生成不安全的客户端配置。' >&2; return 1; }
+  printf '%s\n' "$pin"
+}
 TMP_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-registry.XXXXXX")
 tmpdir(){ local d; d=$(mktemp -d "${TMPDIR:-/tmp}/sing-box-yg.XXXXXX"); printf '%s\n' "$d" >> "$TMP_REGISTRY"; printf '%s\n' "$d"; }
 cleanup_tmp(){
@@ -191,9 +215,14 @@ new_state(){
   reality_public=$(printf '%s\n' "$pair" | awk -F': ' '/PublicKey/{print $2}')
   [[ -n "$reality_private" && -n "$reality_public" ]] || die 'Reality 密钥生成失败。'
   sid=$(openssl rand -hex 4); cert_key="$STATE_DIR/private.key"; cert_crt="$STATE_DIR/cert.pem"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj '/CN=www.bing.com' -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj '/CN=www.bing.com' \
+    -addext 'subjectAltName=DNS:www.bing.com' \
+    -addext 'basicConstraints=critical,CA:FALSE' \
+    -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
+    -addext 'extendedKeyUsage=serverAuth' \
+    -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
   jq -n --arg core "$core" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" \
-    '{schema:1,core:$core,public_address:"",protocols:{vless:{enabled:false,name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid},vmess:{enabled:false,name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,name:"hysteria2",port:0,password:$id,domain:"www.bing.com",up_mbps:100,down_mbps:100,udp_hop:""},tuic:{enabled:false,name:"tuic-v5",port:0,uuid:$id,password:$id,domain:"www.bing.com"},anytls:{enabled:false,name:"anytls",port:0,password:$id,domain:"www.bing.com"}},certificate:{cert:$cert,key:$key,insecure:true}}'
+    '{schema:1,core:$core,public_address:"",protocols:{vless:{enabled:false,name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid},vmess:{enabled:false,name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,name:"hysteria2",port:0,password:$id,domain:"www.bing.com",up_mbps:100,down_mbps:100,udp_hop:""},tuic:{enabled:false,name:"tuic-v5",port:0,uuid:$id,password:$id,domain:"www.bing.com"},anytls:{enabled:false,name:"anytls",port:0,password:$id,domain:"www.bing.com"}},certificate:{cert:$cert,key:$key,mode:"pinned",insecure:true}}'
 }
 
 select_protocols(){ # outputs a JSON state with enabled protocols and unique random ports
@@ -247,6 +276,8 @@ validate_state(){
     (.core|type=="string") and
     (.public_address|type=="string") and
     (.certificate.cert|type=="string") and (.certificate.key|type=="string") and (.certificate.insecure|type=="boolean") and
+    ((.certificate.mode // (if .certificate.insecure then "pinned" else "trusted" end)) as $m |
+      ($m=="pinned" or $m=="trusted") and (.certificate.insecure == ($m=="pinned"))) and
     ([.protocols[]|select(.enabled)]|length)>0 and
     (.protocols.vmess.tls|type=="boolean") and
     (.protocols.hy2.up_mbps|type=="number") and (.protocols.hy2.up_mbps>0) and
@@ -267,7 +298,10 @@ validate_state(){
 
 commit_state(){ # candidate JSON stdin
   local candidate tmp state_tmp config_tmp old_state old_config
-  candidate=$(cat); validate_state "$candidate" || { red '状态无效：检查协议数量、输入类型、UUID、Path 与端口。'; return 1; }
+  candidate=$(jq '.certificate.mode //= (if .certificate.insecure then "pinned" else "trusted" end) |
+    .certificate.insecure = (.certificate.mode == "pinned")' <<<"$(cat)") ||
+    { red '状态 JSON 无效，原配置未改变。'; return 1; }
+  validate_state "$candidate" || { red '状态无效：检查协议数量、输入类型、UUID、Path、证书模式与端口。'; return 1; }
   tmp=$(tmpdir); state_tmp="$tmp/protocols.json"; config_tmp="$tmp/sb.json"; old_state="$tmp/old-state.json"; old_config="$tmp/old-config.json"
   printf '%s\n' "$candidate" > "$state_tmp"
   render_config "$candidate" "$config_tmp" || { red 'JSON 渲染失败，原配置未改变。'; return 1; }
@@ -279,12 +313,18 @@ commit_state(){ # candidate JSON stdin
   mv "$state_tmp" "$STATE_FILE"; mv "$config_tmp" "$CONFIG_FILE"
   if ! write_service || ! restart_service; then
     red '重启失败，正在回滚原配置。'
-    [[ -f "$old_state" ]] && cp "$old_state" "$STATE_FILE"
-    [[ -f "$old_config" ]] && cp "$old_config" "$CONFIG_FILE"
+    if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
+    if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
     restart_service || true
     return 1
   fi
-  generate_subscriptions
+  if ! generate_subscriptions; then
+    red '订阅安全参数生成失败，正在回滚原配置。'
+    if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
+    if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    restart_service || true
+    return 1
+  fi
   reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
   green '配置已通过 JSON 与 sing-box check；已原子替换并重启。'
@@ -298,17 +338,42 @@ address(){ local a; a=$(jq -r '.public_address' "$STATE_FILE"); [[ -n "$a" ]] &&
 uri_host(){ [[ "$1" == *:* && "$1" != \[*\] ]] && printf '[%s]' "$1" || printf '%s' "$1"; }
 urlencode(){ jq -rn --arg x "$1" '$x|@uri'; }
 client_outbound_for(){
-  local tag=$1 host=$2 server port argo
+  local tag=$1 host=$2 server port argo pin
   port=$(jq -r ".protocols.$tag.port" "$STATE_FILE"); server=$host
   case "$tag" in
     vless) jq -c --arg s "$server" --argjson p "$port" '.protocols.vless as $x | {type:"vless",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,flow:"xtls-rprx-vision",tls:{enabled:true,server_name:$x.sni,utls:{enabled:true,fingerprint:"chrome"},reality:{enabled:true,public_key:$x.public_key,short_id:$x.short_id}}}' "$STATE_FILE";;
     vmess)
       argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE")
       [[ -n "$argo" ]] && { server=$argo; port=443; } || { server=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); }
-      jq -c --arg s "$server" --argjson p "$port" --arg argo "$argo" '.protocols.vmess as $x | .certificate as $c | {type:"vmess",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,security:"auto",transport:{type:"ws",path:$x.path,headers:{Host:(if ($argo|length)>0 then $argo else $x.domain end)}},tls:{enabled:($x.tls or (($argo|length)>0)),server_name:(if ($argo|length)>0 then $argo else $x.domain end),insecure:$c.insecure}}' "$STATE_FILE";;
-    hy2) jq -c --arg s "$server" --argjson p "$port" '.protocols.hy2 as $x | .certificate as $c | {type:"hysteria2",tag:$x.name,server:$s,server_port:$p,password:$x.password,up_mbps:$x.up_mbps,down_mbps:$x.down_mbps,tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure}}' "$STATE_FILE";;
-    tuic) jq -c --arg s "$server" --argjson p "$port" '.protocols.tuic as $x | .certificate as $c | {type:"tuic",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,password:$x.password,congestion_control:"bbr",tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure,alpn:["h3"]}}' "$STATE_FILE";;
-    anytls) jq -c --arg s "$server" --argjson p "$port" '.protocols.anytls as $x | .certificate as $c | {type:"anytls",tag:$x.name,server:$s,server_port:$p,password:$x.password,tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure}}' "$STATE_FILE";;
+      [[ -n "$argo" ]] && pin= || pin=$(client_certificate_pin)
+      jq -c --arg s "$server" --argjson p "$port" --arg argo "$argo" --arg pin "$pin" '
+        .protocols.vmess as $x | .certificate as $c |
+        {type:"vmess",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,security:"auto",
+         transport:{type:"ws",path:$x.path,headers:{Host:(if ($argo|length)>0 then $argo else $x.domain end)}},
+         tls:{enabled:($x.tls or (($argo|length)>0)),server_name:(if ($argo|length)>0 then $argo else $x.domain end),
+              insecure:(if ($argo|length)>0 then false else $c.insecure end)}} |
+        if ($pin|length)>0 and .tls.enabled then .tls.certificate_public_key_sha256=[$pin] else . end' "$STATE_FILE";;
+    hy2)
+      pin=$(client_certificate_pin)
+      jq -c --arg s "$server" --argjson p "$port" --arg pin "$pin" '
+        .protocols.hy2 as $x | .certificate as $c |
+        {type:"hysteria2",tag:$x.name,server:$s,server_port:$p,password:$x.password,up_mbps:$x.up_mbps,down_mbps:$x.down_mbps,
+         tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure}} |
+        if ($pin|length)>0 then .tls.certificate_public_key_sha256=[$pin] else . end' "$STATE_FILE";;
+    tuic)
+      pin=$(client_certificate_pin)
+      jq -c --arg s "$server" --argjson p "$port" --arg pin "$pin" '
+        .protocols.tuic as $x | .certificate as $c |
+        {type:"tuic",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,password:$x.password,congestion_control:"bbr",
+         tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure,alpn:["h3"]}} |
+        if ($pin|length)>0 then .tls.certificate_public_key_sha256=[$pin] else . end' "$STATE_FILE";;
+    anytls)
+      pin=$(client_certificate_pin)
+      jq -c --arg s "$server" --argjson p "$port" --arg pin "$pin" '
+        .protocols.anytls as $x | .certificate as $c |
+        {type:"anytls",tag:$x.name,server:$s,server_port:$p,password:$x.password,
+         tls:{enabled:true,server_name:$x.domain,insecure:$c.insecure}} |
+        if ($pin|length)>0 then .tls.certificate_public_key_sha256=[$pin] else . end' "$STATE_FILE";;
   esac
 }
 mihomo_proxy_for(){
@@ -326,9 +391,21 @@ mihomo_proxy_for(){
   esac
 }
 generate_subscriptions(){
-  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy insecure
+  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy insecure cert_mode xray_pin
   local client="$STATE_DIR/sing-box-client.json" mihomo="$STATE_DIR/mihomo.yaml"
-  host=$(address); endpoint=$(uri_host "$host"); insecure=$(jq -r '.certificate.insecure | if . then 1 else 0 end' "$STATE_FILE"); : > "$out"
+  host=$(address); endpoint=$(uri_host "$host"); insecure=$(jq -r '.certificate.insecure | if . then 1 else 0 end' "$STATE_FILE")
+  cert_mode=$(certificate_mode "$STATE_FILE"); xray_pin=
+  if [[ "$cert_mode" == pinned ]] && jq -e '
+    (.protocols.anytls.enabled or .protocols.hy2.enabled or .protocols.tuic.enabled or
+     (.protocols.vmess.enabled and .protocols.vmess.tls and ((.protocols.vmess.argo_domain|length)==0)))
+  ' "$STATE_FILE" >/dev/null; then
+    xray_pin=$(certificate_der_sha256 "$(jq -r '.certificate.cert' "$STATE_FILE")") || true
+    [[ "$xray_pin" =~ ^[0-9a-f]{64}$ ]] || {
+      red '固定模式的证书 SHA256 计算失败，拒绝生成含 allowInsecure 的分享链接。'
+      return 1
+    }
+  fi
+  : > "$out"
   jq -n '{log:{level:"warn"},outbounds:[]}' > "$client"; jq -n '{proxies:[],"proxy-groups":[{name:"PROXY",type:"select",proxies:[]}]}' > "$mihomo"
   [[ -n "$host" ]] || { : > "$STATE_DIR/subscription.base64"; : > "$STATE_DIR/mihomo-subscription.txt"; yellow '未填写公网地址，暂不生成分享链接。'; return; }
   for tag in vless vmess hy2 tuic anytls; do
@@ -339,7 +416,10 @@ generate_subscriptions(){
       vmess) uuid=$(jq -r '.protocols.vmess.uuid' "$STATE_FILE"); path=$(jq -r '.protocols.vmess.path' "$STATE_FILE"); tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE"); argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE"); [[ -n "$argo" ]] && { endpoint=$argo; port=443; tls=true; } || endpoint=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); line="vmess://$(jq -nc --arg add "$endpoint" --argjson p "$port" --arg id "$uuid" --arg path "$path" --arg ps "$name" --arg tls "$tls" --arg host "${argo:-$(jq -r '.protocols.vmess.domain' "$STATE_FILE")}" '{v:"2",ps:$ps,add:$add,port:($p|tostring),id:$id,aid:"0",net:"ws",type:"none",host:$host,path:$path,tls:(if $tls=="true" then "tls" else "" end),sni:$host}' | base64 | tr -d '\n')";;
       hy2) password=$(jq -r '.protocols.hy2.password' "$STATE_FILE"); sni=$(jq -r '.protocols.hy2.domain' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); line="hysteria2://$(urlencode "$password")@${endpoint}:${port}?security=tls&sni=${sni}&insecure=${insecure}$([[ -n "$hop" ]] && printf '&mport=%s' "$hop")#$(urlencode "$name")";;
       tuic) uuid=$(jq -r '.protocols.tuic.uuid' "$STATE_FILE"); password=$(jq -r '.protocols.tuic.password' "$STATE_FILE"); sni=$(jq -r '.protocols.tuic.domain' "$STATE_FILE"); line="tuic://${uuid}:$(urlencode "$password")@${endpoint}:${port}?congestion_control=bbr&sni=${sni}&insecure=${insecure}#$(urlencode "$name")";;
-      anytls) password=$(jq -r '.protocols.anytls.password' "$STATE_FILE"); sni=$(jq -r '.protocols.anytls.domain' "$STATE_FILE"); line="anytls://$(urlencode "$password")@${endpoint}:${port}?sni=${sni}&insecure=${insecure}#$(urlencode "$name")";;
+      anytls)
+        password=$(jq -r '.protocols.anytls.password' "$STATE_FILE"); sni=$(jq -r '.protocols.anytls.domain' "$STATE_FILE")
+        line="anytls://$(urlencode "$password")@${endpoint}:${port}?sni=${sni}$([[ "$cert_mode" == pinned ]] && printf '&pcs=%s' "$xray_pin")#$(urlencode "$name")"
+        ;;
     esac
     printf '%s\n' "$line" >> "$out"
     ob=$(client_outbound_for "$tag" "$host"); jq --argjson x "$ob" '.outbounds += [$x]' "$client" > "$client.next" && mv "$client.next" "$client"
@@ -603,7 +683,7 @@ certificate_covers_enabled_domains(){
   done
 }
 set_certificate(){
-  local cert key cert_pub key_pub insecure candidate
+  local cert key cert_pub key_pub choice mode insecure candidate
   ask '证书完整路径（回车/0 返回上一级）：' cert
   cancel_input "$cert" && return 0
   ask '私钥完整路径（回车/0 返回上一级）：' key
@@ -613,25 +693,44 @@ set_certificate(){
   cert_pub=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
   key_pub=$(openssl pkey -in "$key" -pubout -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
   [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] || { red '证书和私钥不匹配。'; return 0; }
-  echo '客户端证书校验：1 跳过（自签）  2 验证（受信证书）  0 返回上一级'
-  ask '选择：' insecure
-  cancel_input "$insecure" && return 0
-  case "$insecure" in 1) insecure=true;;2) insecure=false;;*) red '无效输入。'; return 0;;esac
+  echo '客户端证书校验：1 自签证书固定 SHA256  2 系统 CA 验证（ACME/受信证书，推荐）  0 返回上一级'
+  ask '选择：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in
+    1) mode=pinned; insecure=true;;
+    2) mode=trusted; insecure=false;;
+    *) red '无效输入。'; return 0;;
+  esac
   [[ "$insecure" == true ]] || certificate_covers_enabled_domains "$cert" || {
     red '请先在证书管理中把协议域名改为证书覆盖的域名，再重新导入。'
     return 0
   }
-  candidate=$(jq --arg cert "$cert" --arg key "$key" --argjson insecure "$insecure" '.certificate.cert=$cert | .certificate.key=$key | .certificate.insecure=$insecure' "$STATE_FILE")
+  if [[ "$mode" == pinned ]]; then
+    [[ "$(certificate_der_sha256 "$cert")" =~ ^[0-9a-f]{64}$ &&
+       "$(certificate_spki_sha256 "$cert")" =~ ^[A-Za-z0-9+/]{43}=$ ]] ||
+      { red '证书固定值计算失败，原配置未改变。'; return 0; }
+  fi
+  candidate=$(jq --arg cert "$cert" --arg key "$key" --arg mode "$mode" --argjson insecure "$insecure" \
+    '.certificate.cert=$cert | .certificate.key=$key | .certificate.mode=$mode | .certificate.insecure=$insecure' "$STATE_FILE")
   apply_state "$candidate"
 }
 show_certificate(){
-  local cert
+  local cert mode der_pin spki_pin
   cert=$(jq -r '.certificate.cert' "$STATE_FILE")
   echo '当前全局 TLS 证书：'
-  jq '{certificate,domains:{vmess:.protocols.vmess.domain,hy2:.protocols.hy2.domain,tuic:.protocols.tuic.domain,anytls:.protocols.anytls.domain}}' "$STATE_FILE"
+  mode=$(certificate_mode "$STATE_FILE")
+  jq --arg mode "$mode" '{certificate:(.certificate + {mode:$mode}),domains:{vmess:.protocols.vmess.domain,hy2:.protocols.hy2.domain,tuic:.protocols.tuic.domain,anytls:.protocols.anytls.domain}}' "$STATE_FILE"
   if [[ -r "$cert" ]]; then
     openssl x509 -in "$cert" -noout -subject -issuer -dates
     openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null || true
+    if [[ "$mode" == pinned ]]; then
+      der_pin=$(certificate_der_sha256 "$cert"); spki_pin=$(certificate_spki_sha256 "$cert")
+      printf 'Xray/v2rayN pcs（证书 DER SHA256）：%s\n' "$der_pin"
+      printf 'Sing-box certificate_public_key_sha256：%s\n' "$spki_pin"
+      yellow '固定证书一旦轮换，客户端必须重新导入订阅。'
+    else
+      green '当前使用系统 CA 验证；ACME 续期不需要客户端更新指纹。'
+    fi
   else
     yellow '当前证书文件不可读。'
   fi
@@ -647,7 +746,7 @@ set_tls_domain(){
       red '当前受信证书不覆盖该域名，拒绝修改。请先导入匹配证书。'
       return 0
     fi
-    yellow '当前为跳过证书校验模式，证书未覆盖该域名；客户端仍会跳过验证。'
+    yellow '当前为自签证书固定模式；域名不在 SAN 中，但客户端将校验证书固定值。'
   fi
   if [[ "$tag" == all ]]; then
     candidate=$(jq --arg d "$domain" '.protocols.vmess.domain=$d | .protocols.hy2.domain=$d | .protocols.tuic.domain=$d | .protocols.anytls.domain=$d' "$STATE_FILE")
@@ -670,11 +769,11 @@ tls_domain_menu(){
 certificate_menu(){
   local choice
   while :; do
-    echo '证书管理：1 查看证书和域名  2 导入证书/私钥  3 配置协议证书域名  4 运行 ACME 签发脚本  0 返回上一级'
+    echo '证书管理：1 查看证书/模式/固定值  2 导入证书/私钥  3 配置协议证书域名  4 运行 ACME 签发脚本  0 返回上一级'
     ask '选择：' choice
     case "$choice" in
       1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
-      4)acme; yellow 'ACME 签发完成后，请回到“导入证书/私钥”绑定生成的证书路径。';;
+      4)acme; yellow 'ACME 完成后，请导入证书/私钥并选择“系统 CA 验证（推荐）”；Cloudflare 上的 AnyTLS 记录保持灰云。';;
       0|'')return 0;;*)red '无效输入。';;
     esac
   done
@@ -811,6 +910,23 @@ configure_menu(){
   done
 }
 
+offer_tls_certificate_setup(){
+  local choice
+  jq -e '
+    .protocols.anytls.enabled or .protocols.hy2.enabled or .protocols.tuic.enabled or
+    (.protocols.vmess.enabled and .protocols.vmess.tls)
+  ' "$STATE_FILE" >/dev/null || return 0
+  echo
+  yellow '普通 TLS 协议当前使用安全的自签证书固定模式。'
+  echo '有自有域名时，推荐改用灰云 DNS + ACME 受信证书：1 现在进入证书管理  2 暂时保留固定模式  0 返回主菜单'
+  ask '选择：' choice
+  case "$choice" in
+    1) certificate_menu;;
+    2|0|'') return 0;;
+    *) red '无效输入；暂时保留固定模式，可稍后使用 sb → 2 → 6 配置。';;
+  esac
+}
+
 install_flow(){
   local core choice state
   echo "选择内核：1 ${SB_DEFAULT}（默认，含 AnyTLS）  2 ${SB_110}（不含 AnyTLS）  0 返回上一级"
@@ -823,6 +939,7 @@ install_flow(){
   printf '%s\n' "$core" > "$STATE_DIR/core-version"
   update_script
   green '安装完成。可通过 sb → 配置菜单随时增删协议。'
+  offer_tls_certificate_setup
 }
 
 update_script(){

@@ -1,3 +1,7 @@
+v26.7.25-fork.2 更新内容：
+
+VPS fork：AnyTLS 优先使用系统 CA 受信证书；自签证书改用 Xray/v2rayN 证书固定和 Sing-box 公钥固定，不再仅导出 allowInsecure。
+
 v26.7.25-fork.1 更新内容：
 
 VPS fork：协议按需安装、状态文件管理、依赖版本锁定与 SHA256 校验。
