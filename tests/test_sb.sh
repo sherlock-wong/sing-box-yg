@@ -144,6 +144,10 @@ rotate_reality_keys <<<"0"
 toggle_protocol vless <<<"0"
 update_core <<<"0"
 protocol_menu <<< $'1\n5\n0\n0\n0'
+if uninstall <<<"0"; then
+  echo 'cancelled uninstall unexpectedly succeeded' >&2
+  exit 1
+fi
 [[ $apply_calls -eq 0 ]]
 
 # Reality scans all ten 3x-ui v3.4.2 defaults, ranks stability/latency, and applies a selected top-five result.

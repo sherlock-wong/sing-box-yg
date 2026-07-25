@@ -852,19 +852,31 @@ update_core(){
   if printf '%s\n' "$candidate" | commit_state; then printf '%s\n' "$v" > "$STATE_DIR/core-version"; rm -f "$STATE_DIR/sing-box.old"; else mv "$STATE_DIR/sing-box.old" "$STATE_DIR/sing-box"; restart_service || true; fi
 }
 uninstall(){
-  read -r -p '确认卸载 VPS Sing-box（输入 YES；回车/0 返回上一级）：' x; [[ $x == YES ]] || return 0
+  local x fw
+  read -r -p '确认卸载 VPS Sing-box（输入 YES；回车/0 返回上一级）：' x
+  [[ $x == YES ]] || return 1
+  [[ "$STATE_DIR" == /etc/s-box ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
   systemctl disable --now sing-box sing-box-argo 2>/dev/null || true
   rc-service sing-box stop 2>/dev/null || true
   rc-update del sing-box default 2>/dev/null || true
+  for fw in iptables ip6tables; do
+    command -v "$fw" >/dev/null 2>&1 || continue
+    while "$fw" -t nat -C PREROUTING -j SBYG_HY2 2>/dev/null; do "$fw" -t nat -D PREROUTING -j SBYG_HY2 || break; done
+    "$fw" -t nat -F SBYG_HY2 2>/dev/null || true
+    "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
+  done
   rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-argo.service /etc/init.d/sing-box
+  rm -f /usr/local/bin/sb
   systemctl daemon-reload 2>/dev/null || true
+  green '卸载完成：服务、状态文件、防火墙跳跃链和 sb 快捷命令已删除。'
+  return 0
 }
 
 main(){
   need_root; if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
   check_version
   while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 Acme  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
-    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) acme;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) uninstall;;0) exit 0;;*) red '无效输入。';;esac
+    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) acme;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) if uninstall; then exit 0; fi;;0) exit 0;;*) red '无效输入。';;esac
   done
 }
 [[ "${SBYG_LIB_ONLY:-0}" == 1 ]] || main "$@"
