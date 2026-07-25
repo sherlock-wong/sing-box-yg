@@ -483,13 +483,26 @@ rotate_reality_keys(){
   [[ -n "$priv" && -n "$pub" ]] || { red '密钥生成失败。'; return 0; }
   apply_state "$(jq --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '.protocols.vless.private_key=$priv | .protocols.vless.public_key=$pub | .protocols.vless.short_id=$sid' "$STATE_FILE")"
 }
+now_millis(){
+  local value
+  value=$(date +%s%3N)
+  [[ "$value" =~ ^[0-9]+$ ]] || value="$(date +%s)000"
+  printf '%s\n' "$value"
+}
 probe_reality_once(){ # host [sample-number] -> handshake milliseconds
-  local host=$1 start end out
-  start=$(date +%s%3N)
-  out=$(timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 -groups X25519 -verify_hostname "$host" -verify_return_error </dev/null 2>&1) || return 1
-  grep -q 'Verify return code: 0 (ok)' <<<"$out" || return 1
-  grep -q 'ALPN protocol: h2' <<<"$out" || return 1
-  end=$(date +%s%3N)
+  local host=$1 start end output
+  output=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-reality.XXXXXX")
+  start=$(now_millis)
+  if ! timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 -groups X25519 -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1; then
+    rm -f "$output"
+    return 1
+  fi
+  if ! grep -aq 'Verify return code: 0 (ok)' "$output" || ! grep -aq 'ALPN protocol: h2' "$output"; then
+    rm -f "$output"
+    return 1
+  fi
+  end=$(now_millis)
+  rm -f "$output"
   printf '%s\n' "$((end - start))"
 }
 scan_reality_candidates(){ # optional candidate arguments; outputs host, successes, average-ms, jitter-ms

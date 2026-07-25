@@ -132,6 +132,11 @@ protocol_menu <<< $'1\n5\n0\n0\n0'
 # Reality scans all ten 3x-ui v3.4.2 defaults, ranks stability/latency, and applies a selected top-five result.
 [[ ${#REALITY_CANDIDATES[@]} -eq 10 ]]
 [[ ${REALITY_CANDIDATES[0]} == www.cloudflare.com && ${REALITY_CANDIDATES[9]} == dl.google.com ]]
+# Binary/NUL bytes in openssl output stay in a temporary file and never enter a Bash variable.
+timeout(){ printf 'Verify return code: 0 (ok)\0binary\nALPN protocol: h2\n'; }
+probe_latency=$(probe_reality_once binary.example 1)
+[[ "$probe_latency" =~ ^[0-9]+$ ]]
+unset -f timeout
 saved_probe_reality_once=$(declare -f probe_reality_once)
 probe_reality_once(){
   local host=$1 sample=$2
