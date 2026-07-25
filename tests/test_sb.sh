@@ -90,7 +90,7 @@ set_case_dir selection
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
 saved_port_available=$(declare -f port_available)
 port_available(){ return 0; }
-selected=$(select_protocols 1.13.14 <<<"1,3,5")
+selected=$(select_protocols 1.13.14 <<<"1,3,4")
 eval "$saved_port_available"
 jq -e '[.protocols|to_entries[]|select(.value.enabled)|.key] == ["vless","hy2","anytls"]' <<<"$selected" >/dev/null
 set_case_dir selection-cancel
@@ -103,24 +103,24 @@ fi
 
 check_case single 1.13.14 "$CORE_DEFAULT" 1 vless
 check_case multi 1.13.14 "$CORE_DEFAULT" 3 vless hy2 anytls
-check_case five 1.13.14 "$CORE_DEFAULT" 5 vless vmess hy2 tuic anytls
-check_case legacy 1.10.7 "$CORE_110" 4 vless vmess hy2 tuic
+check_case four 1.13.14 "$CORE_DEFAULT" 4 vless vmess hy2 anytls
+check_case legacy 1.10.7 "$CORE_110" 3 vless vmess hy2
 
 # New self-signed certificates are leaf certificates with SAN and both client-specific pins.
-five_state=$(cat "$TEST_ROOT/five/protocols.json")
-[[ $(jq -r '.certificate.mode' <<<"$five_state") == pinned ]]
-five_cert=$(jq -r '.certificate.cert' <<<"$five_state")
-five_cert_text=$(openssl x509 -in "$five_cert" -noout -text)
-grep -q 'DNS:www.bing.com' <<<"$five_cert_text"
-grep -q 'CA:FALSE' <<<"$five_cert_text"
-expected_der_pin=$(certificate_der_sha256 "$five_cert")
-expected_spki_pin=$(certificate_spki_sha256 "$five_cert")
-anytls_link=$(grep '^anytls://' "$TEST_ROOT/five/subscription.txt")
+four_state=$(cat "$TEST_ROOT/four/protocols.json")
+[[ $(jq -r '.certificates.default.mode' <<<"$four_state") == pinned ]]
+four_cert=$(jq -r '.certificates.default.cert' <<<"$four_state")
+four_cert_text=$(openssl x509 -in "$four_cert" -noout -text)
+grep -q 'DNS:www.bing.com' <<<"$four_cert_text"
+grep -q 'CA:FALSE' <<<"$four_cert_text"
+expected_der_pin=$(certificate_der_sha256 "$four_cert")
+expected_spki_pin=$(certificate_spki_sha256 "$four_cert")
+anytls_link=$(grep '^anytls://' "$TEST_ROOT/four/subscription.txt")
 [[ "$anytls_link" == *"&pcs=${expected_der_pin}"* && "$anytls_link" != *'insecure='* ]]
 jq -e --arg pin "$expected_spki_pin" '
   .outbounds[] | select(.type=="anytls") |
   .tls.insecure == true and .tls.certificate_public_key_sha256 == [$pin]
-' "$TEST_ROOT/five/sing-box-client.json" >/dev/null
+' "$TEST_ROOT/four/sing-box-client.json" >/dev/null
 
 # 1.10 never accepts AnyTLS.
 legacy_state=$(cat "$TEST_ROOT/legacy/protocols.json")
@@ -128,14 +128,29 @@ legacy_invalid=$(jq '.protocols.anytls.enabled=true | .protocols.anytls.port=260
 ! validate_state "$legacy_invalid"
 
 # Duplicate/invalid ports, certificate modes and a malformed WS path are rejected.
-duplicate=$(jq '.protocols.vmess.port=.protocols.vless.port' <<<"$five_state")
+duplicate=$(jq '.protocols.vmess.port=.protocols.vless.port' <<<"$four_state")
 ! validate_state "$duplicate"
-bad_path=$(jq '.protocols.vmess.path="missing-slash"' <<<"$five_state")
+bad_path=$(jq '.protocols.vmess.path="missing-slash"' <<<"$four_state")
 ! validate_state "$bad_path"
-bad_port=$(jq '.protocols.hy2.port=70000' <<<"$five_state")
+bad_port=$(jq '.protocols.hy2.port=70000' <<<"$four_state")
 ! validate_state "$bad_port"
-bad_cert_mode=$(jq '.certificate.mode="trusted" | .certificate.insecure=true' <<<"$five_state")
+bad_cert_mode=$(jq '.certificates.default.mode="trusted" | .certificates.default.insecure=true' <<<"$four_state")
 ! validate_state "$bad_cert_mode"
+
+# Schema 1 states migrate the global certificate into the library and remove TUIC completely.
+schema1_state=$(jq '
+  .schema=1 | .certificate=.certificates.default | del(.certificates) |
+  .protocols.tuic={enabled:true,name:"tuic-v5",port:29999,uuid:.protocols.vless.uuid,password:"legacy",domain:"www.bing.com"}
+' <<<"$four_state")
+migrated_state=$(normalize_state <<<"$schema1_state")
+jq -e '
+  .schema==2 and (.protocols|has("tuic")|not) and
+  .protocols.vmess.certificate_id=="default" and
+  .protocols.hy2.certificate_id=="default" and
+  .protocols.anytls.certificate_id=="default" and
+  .certificates.default.cert != null
+' <<<"$migrated_state" >/dev/null
+validate_state "$migrated_state"
 ss(){ printf 'udp UNCONN 0 0 [::]:28000 [::]:*\n'; }
 ! port_available 28000
 port_available 28001
@@ -147,10 +162,7 @@ valid_host node.example.com
 ! valid_host 'bad host!'
 
 # Active UFW changes are transactional: open candidate ports first, then remove only owned old rules.
-old_fw_state=$(jq '
-  .protocols.vmess.enabled=false | .protocols.tuic.enabled=false |
-  .protocols.hy2.udp_hop=""
-' <<<"$five_state")
+old_fw_state=$(jq '.protocols.vmess.enabled=false | .protocols.hy2.udp_hop=""' <<<"$four_state")
 old_vless_port=$(jq -r '.protocols.vless.port' <<<"$old_fw_state")
 old_anytls_port=$(jq -r '.protocols.anytls.port' <<<"$old_fw_state")
 new_fw_state=$(jq '
@@ -310,19 +322,32 @@ eval "$saved_find_domain_certificate"
 eval "$saved_bind_trusted_domain_certificate"
 eval "$saved_acme"
 
-# A trusted certificate setting propagates to share links and must cover enabled TLS protocol domains.
+# Different TLS protocols can bind different trusted certificates.
 set_case_dir certificate
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=tls.example.com' -addext 'subjectAltName=DNS:tls.example.com' \
   -keyout "$STATE_DIR/trusted.key" -out "$STATE_DIR/trusted.pem" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=hy2.example.com' -addext 'subjectAltName=DNS:hy2.example.com' \
+  -keyout "$STATE_DIR/hy2.key" -out "$STATE_DIR/hy2.pem" >/dev/null 2>&1
 cert_state=$(jq --arg cert "$STATE_DIR/trusted.pem" --arg key "$STATE_DIR/trusted.key" \
-  '.certificate={cert:$cert,key:$key,insecure:false} | .public_address="node.example.com" |
-   .protocols.vmess.domain="tls.example.com" | .protocols.hy2.domain="tls.example.com" |
-   .protocols.tuic.domain="tls.example.com" | .protocols.anytls.domain="tls.example.com"' <<<"$five_state")
+  --arg hy2cert "$STATE_DIR/hy2.pem" --arg hy2key "$STATE_DIR/hy2.key" '
+   .public_address="node.example.com" |
+   .certificates.tls={name:"tls.example.com",cert:$cert,key:$key,mode:"trusted",insecure:false} |
+   .certificates.hy2={name:"hy2.example.com",cert:$hy2cert,key:$hy2key,mode:"trusted",insecure:false} |
+   .protocols.vmess.domain="tls.example.com" | .protocols.vmess.certificate_id="tls" |
+   .protocols.hy2.domain="hy2.example.com" | .protocols.hy2.certificate_id="hy2" |
+   .protocols.anytls.domain="tls.example.com" | .protocols.anytls.certificate_id="tls"
+  ' <<<"$four_state")
 printf '%s\n' "$cert_state" > "$STATE_FILE"
 saved_certificate_matches_domain=$(declare -f certificate_matches_domain)
-certificate_matches_domain(){ [[ "$2" == tls.example.com ]]; }
-certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
+certificate_matches_domain(){
+  [[ "$1:$2" == "$STATE_DIR/trusted.pem:tls.example.com" ||
+     "$1:$2" == "$STATE_DIR/hy2.pem:hy2.example.com" ]]
+}
+validate_state "$cert_state"
+render_config "$cert_state" "$CONFIG_FILE"
+[[ $(jq -r '.inbounds[] | select(.tag=="hy2-sb") | .tls.certificate_path' "$CONFIG_FILE") == "$STATE_DIR/hy2.pem" ]]
+[[ $(jq -r '.inbounds[] | select(.tag=="anytls-sb") | .tls.certificate_path' "$CONFIG_FILE") == "$STATE_DIR/trusted.pem" ]]
 generate_subscriptions
 trusted_anytls_link=$(grep '^anytls://' "$STATE_DIR/subscription.txt")
 [[ "$trusted_anytls_link" != *'insecure='* && "$trusted_anytls_link" != *'pcs='* ]]
@@ -330,34 +355,45 @@ jq -e '
   .outbounds[] | select(.type=="anytls") |
   .tls.insecure == false and (.tls | has("certificate_public_key_sha256") | not)
 ' "$STATE_DIR/sing-box-client.json" >/dev/null
-jq -e '[.proxies[] | select(.type=="hysteria2" or .type=="tuic" or .type=="anytls") | ."skip-cert-verify"] | all(. == false)' "$STATE_DIR/mihomo.yaml" >/dev/null
-bad_cert_state=$(jq '.protocols.anytls.domain="other.example.com"' <<<"$cert_state")
-printf '%s\n' "$bad_cert_state" > "$STATE_FILE"
-! certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
+jq -e '[.proxies[] | select(.type=="hysteria2" or .type=="anytls") | ."skip-cert-verify"] | all(. == false)' "$STATE_DIR/mihomo.yaml" >/dev/null
+
+# Certificate selection can atomically switch both certificate and SNI for any TLS protocol.
+saved_apply_state=$(declare -f apply_state)
+captured_state=
+apply_state(){ captured_state=$1; }
+hy2_cert_index=$(jq '.certificates | to_entries | map(.key) | index("hy2") + 1' "$STATE_FILE")
+select_certificate_for_protocol <<< $'3\n'"${hy2_cert_index}"$'\nhy2.example.com'
+jq -e '.protocols.anytls.certificate_id=="hy2" and .protocols.anytls.domain=="hy2.example.com"' <<<"$captured_state" >/dev/null
+eval "$saved_apply_state"
 
 # Binding a validated domain certificate passes one atomic candidate to commit_state.
 single_tls_state=$(jq '
   .protocols.vless.enabled=false | .protocols.vmess.enabled=false |
-  .protocols.hy2.enabled=false | .protocols.tuic.enabled=false |
+  .protocols.hy2.enabled=false |
   .protocols.anytls.enabled=true | .protocols.anytls.domain="www.bing.com" |
-  .certificate.mode="pinned" | .certificate.insecure=true
+  .protocols.anytls.certificate_id="default"
 ' <<<"$cert_state")
 printf '%s\n' "$single_tls_state" > "$STATE_FILE"
 saved_commit_state=$(declare -f commit_state)
 bound_candidate_file="$STATE_DIR/bound-candidate.json"
 commit_state(){ cat > "$bound_candidate_file"; }
 bind_trusted_domain_certificate anytls tls.example.com "$STATE_DIR/trusted.pem" "$STATE_DIR/trusted.key"
-jq -e --arg cert "$STATE_DIR/trusted.pem" --arg key "$STATE_DIR/trusted.key" '
+jq -e '
   .protocols.anytls.domain == "tls.example.com" and
-  .certificate == {cert:$cert,key:$key,mode:"trusted",insecure:false}
+  (.protocols.anytls.certificate_id | startswith("cert_")) and
+  (.certificates[.protocols.anytls.certificate_id] |
+    .name=="tls.example.com" and .mode=="trusted" and .insecure==false)
 ' "$bound_candidate_file" >/dev/null
+managed_cert=$(jq -r '.certificates[.protocols.anytls.certificate_id].cert' "$bound_candidate_file")
+managed_key=$(jq -r '.certificates[.protocols.anytls.certificate_id].key' "$bound_candidate_file")
+[[ -r "$managed_cert" && -r "$managed_key" && "$managed_cert" == "$STATE_DIR"/certificates/*/cert.pem ]]
 eval "$saved_commit_state"
 eval "$saved_certificate_matches_domain"
 
 # Subscription/config output follows runtime disable.
 set_case_dir sync
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
-sync_state=$(jq '.protocols.vmess.enabled=false | .protocols.hy2.enabled=false | .protocols.tuic.enabled=false | .protocols.anytls.enabled=false' <<<"$five_state")
+sync_state=$(jq '.protocols.vmess.enabled=false | .protocols.hy2.enabled=false | .protocols.anytls.enabled=false' <<<"$four_state")
 printf '%s\n' "$sync_state" > "$STATE_FILE"
 render_config "$sync_state" "$CONFIG_FILE"
 generate_subscriptions

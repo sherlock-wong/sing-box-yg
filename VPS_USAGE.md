@@ -4,7 +4,7 @@
 
 ## 准备与安装
 
-使用受支持的 Debian、Ubuntu、RHEL 系或 Alpine 系统，并以 `root` 运行。VPS 控制台防火墙/安全组应放行实际启用协议的 TCP/UDP 端口；Reality、Vmess 一般为 TCP，Hysteria2 与 TUIC 为 UDP。服务一直监听 `::`；分享链接的对外地址是独立设置。
+使用受支持的 Debian、Ubuntu、RHEL 系或 Alpine 系统，并以 `root` 运行。VPS 控制台防火墙/安全组应放行实际启用协议的 TCP/UDP 端口；Reality、Vmess、AnyTLS 使用 TCP，Hysteria2 使用 UDP。服务一直监听 `::`；分享链接的对外地址是独立设置。
 
 正式 fork 安装命令：
 
@@ -18,7 +18,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/ma
 SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/feature/selectable-protocols/sb.sh)
 ```
 
-安装时输入协议编号的逗号分隔列表。例如 `1,3,5` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 `1.10.7` 时不显示 AnyTLS，输入 `5` 会被拒绝。
+安装时输入协议编号的逗号分隔列表。例如 `1,3,4` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 `1.10.7` 时不显示 AnyTLS，输入 `4` 会被拒绝。VPS fork 已移除 TUIC v5。
 
 ## 菜单、节点与订阅
 
@@ -39,11 +39,11 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”会从当前 VPS 并发扫描 3x-ui v3.4.2 的 10 个默认候选，每个目标执行三次 TLS 1.3、HTTP/2、X25519 和证书检测。脚本淘汰成功不足两次的目标，按成功次数、平均握手耗时及抖动排序，只显示前五项供选择；也可以单独扫描自定义域名。
 4. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
 5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
-6. `sb → 2 → 6 → 4` 是域名证书向导。选择 Vmess、Hy2、TUIC、AnyTLS 或全部统一，再填写证书域名。脚本先检查当前已绑定的受信证书以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；找到有效且覆盖该域名的证书就直接进入绑定确认。没有证书时可运行锁定版 ACME 或手动指定已有证书。ACME 完成后脚本会自动发现输出，不需要再次手动导入。
+6. `sb → 2 → 6` 是多证书管理。证书库可以保存多组证书和私钥，Vmess、Hy2、AnyTLS 各自记录独立的证书绑定。选项 `4` 是域名证书向导：选择协议或全部协议，再填写证书域名。脚本先检查证书库以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；没有证书时可运行锁定版 ACME 或手动指定已有证书。验证成功后会复制到 `/etc/s-box/certificates/<证书ID>/`，加入证书库并自动绑定。选项 `5` 可随时为某个协议改选证书；如果新证书不覆盖当前 SNI，脚本会要求同时填写该证书覆盖的新域名。
 
 配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
 
-AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书域名相符，没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
+AnyTLS 和 Hysteria2 使用普通 TLS：SNI 应与该协议绑定证书的实际域名相符，没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
 
 ### AnyTLS 域名与证书
 
@@ -56,7 +56,7 @@ AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书�
 
 新安装的备用自签证书包含匹配的 SAN、`CA:FALSE`、服务端 KeyUsage，并默认进入固定模式，不再给 AnyTLS 分享链接输出仅有 `insecure=1` 的配置。已有状态文件若缺少 `certificate.mode`，下次应用时会根据原来的 `insecure` 值迁移：`true` 迁移为 `pinned`，`false` 迁移为 `trusted`。固定值无法计算时脚本拒绝生成不安全的客户端配置并回滚本次状态修改。
 
-从自签切换域名证书时，推荐使用 `sb → 2 → 6 → 4 → 4 AnyTLS`（主菜单 `7` 也会进入同一向导）。脚本会检查证书可读性、有效期、公私钥匹配和域名覆盖，再把证书路径、AnyTLS 域名及校验模式作为同一次事务写入；随后执行 JSON 与 `sing-box check`、重启并重新生成订阅。证书是全局共享的，如果其他已启用 TLS 协议使用不同域名，向导会要求统一域名；也可改用一张 SAN 同时覆盖所有域名的证书。任何检查、申请、配置校验或重启失败，原自签证书和运行配置都会保留。切换成功后应在客户端重新导入最新订阅/分享链接。
+从自签切换 AnyTLS 域名证书时，推荐使用 `sb → 2 → 6 → 4 → 3 AnyTLS`（主菜单 `7` 也会进入同一向导）。脚本会检查证书可读性、有效期、公私钥匹配和域名覆盖，再把证书库条目、AnyTLS 域名和证书绑定作为同一次事务写入；随后执行 JSON 与 `sing-box check`、重启并重新生成订阅。Vmess、Hy2 和 AnyTLS 可以分别使用不同证书，也可以在向导中选择“全部协议”共用一张多 SAN 证书。任何检查、申请、配置校验或重启失败，原证书绑定和运行配置都会保留。切换成功后应在客户端重新导入最新订阅/分享链接。ACME 续期后客户端不需要更新指纹，但证书库使用托管副本时需要重跑对应域名向导，把续期后的文件同步进证书库。
 
 ## 运维与故障处理
 
@@ -64,4 +64,4 @@ AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书�
 
 遇到连接问题先检查安全组、防火墙、协议端口和 `sb → 6` 日志，再执行主菜单 `3` 重启。切换内核时，如果现有配置不能通过新内核检查，旧内核会保留。卸载需要输入大写 `YES`。
 
-旧版安装若没有 `/etc/s-box/protocols.json`，脚本会禁止直接修改并提示先卸载、后重装。依赖校验失败时不要跳过校验；检查 VPS 到 GitHub/API 发布源的网络和系统时间后重试，或等待维护者同时更新脚本常量、`DEPENDENCY_LOCKS.md` 与版本说明。
+旧版安装若没有 `/etc/s-box/protocols.json`，脚本会禁止直接修改并提示先卸载、后重装。schema 1 状态在更新后会自动迁移到多证书库并移除 TUIC；如果旧状态只启用了 TUIC，脚本不会擅自启用其他协议，而会要求卸载重装。依赖校验失败时不要跳过校验；检查 VPS 到 GitHub/API 发布源的网络和系统时间后重试，或等待维护者同时更新脚本常量、`DEPENDENCY_LOCKS.md` 与版本说明。
