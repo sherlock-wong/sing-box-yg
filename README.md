@@ -39,15 +39,17 @@
 
 [Sing-box精装桶五合一脚本重磅更新（六）：新增AnyTLS协议；本地IP订阅自动同步更新，通吃Clash/Mihomo、Sing-box与聚合节点](https://youtu.be/LF0-n6-Z6kI)
 
-### VPS专用一键脚本如下：快捷方式：```sb```
+### VPS专用一键脚本如下（fork 正式版）：快捷方式：```sb```
 
 ```
-bash <(wget -qO- https://raw.githubusercontent.com/yonggekkk/sing-box-yg/main/sb.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
 ```
 或者
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/sing-box-yg/main/sb.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
 ```
+
+VPS 多选协议、运行期增删、订阅、依赖校验和故障处理请见 [VPS_USAGE.md](VPS_USAGE.md)。
 
 ### Sing-box-yg脚本界面预览图（注：相关参数随意填写，仅供围观）
 
