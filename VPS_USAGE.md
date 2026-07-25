@@ -18,7 +18,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/ma
 SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/feature/selectable-protocols/sb.sh)
 ```
 
-安装时输入协议编号的逗号分隔列表。例如 `1,3,5` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。选择 `1.10.7` 时不显示 AnyTLS，输入 `5` 会被拒绝。
+安装时输入协议编号的逗号分隔列表。例如 `1,3,5` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 `1.10.7` 时不显示 AnyTLS，输入 `5` 会被拒绝。
 
 ## 菜单、节点与订阅
 
@@ -28,16 +28,20 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 
 “管理协议”可启用/停用协议、改节点名、端口和 UUID/密码。不能停用最后一个协议；新增协议自动分配端口，端口修改检查格式、重复及系统监听冲突。
 
+所有配置子菜单都显示 `0 返回上一级`，并且只返回紧邻的上一层（例如 SNI 候选返回 Vless 专项参数，再返回 Vless 操作菜单）。进入某项后如果不想修改，输入 `0` 或直接回车即可取消；取消不会写状态文件、生成配置或重启服务。启停协议、轮换 Reality 密钥和手动重新生成订阅还会再次要求确认。
+
 常见操作示例：
 
 1. `sb → 2 → 2`，选择协议后用“启用/停用”在安装后增删协议。
 2. 在同一协议菜单用“名称”“端口”“凭据”修改节点名、监听端口和 UUID/密码。
-3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。
+3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。SNI 菜单提供 3x-ui v3.4.2 默认候选的前五项：`www.cloudflare.com`、`www.microsoft.com`、`www.amazon.com`、`aws.amazon.com`、`www.samsung.com`，另可自定义。选中后脚本会从当前 VPS 检查 TLS 1.3、HTTP/2、X25519 和证书，未通过就保持原配置。
 4. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
-5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；留空关闭跳跃。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
+5. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
 6. `sb → 2 → 6` 可切换全局证书和私钥路径；证书格式、公私钥匹配和最终 Sing-box 配置都必须验证成功。
 
-配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。留空会尝试探测 IPv4。它仅影响分享链接，服务仍监听 `::`。
+配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
+
+AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书覆盖的域名相符（自签证书则由客户端跳过验证），没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
 
 ## 运维与故障处理
 

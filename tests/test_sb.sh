@@ -66,6 +66,13 @@ port_available(){ return 0; }
 selected=$(select_protocols 1.13.14 <<<"1,3,5")
 eval "$saved_port_available"
 jq -e '[.protocols|to_entries[]|select(.value.enabled)|.key] == ["vless","hy2","anytls"]' <<<"$selected" >/dev/null
+set_case_dir selection-cancel
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+if select_protocols 1.13.14 <<<"0" >/dev/null; then
+  echo 'protocol selection cancellation unexpectedly succeeded' >&2
+  exit 1
+fi
+[[ ! -e "$STATE_DIR/cert.pem" && ! -e "$STATE_DIR/private.key" ]]
 
 check_case single 1.13.14 "$CORE_DEFAULT" 1 vless
 check_case multi 1.13.14 "$CORE_DEFAULT" 3 vless hy2 anytls
@@ -94,6 +101,44 @@ valid_host 2001:db8::10
 valid_host node.example.com
 ! valid_host 999.1.1.1
 ! valid_host 'bad host!'
+
+# Every edit prompt can return without producing a candidate.
+set_case_dir cancel
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+cancel_state=$(make_state 1.13.14 "$CORE_DEFAULT")
+cancel_state=$(enable_tags "$cancel_state" vless)
+printf '%s\n' "$cancel_state" > "$STATE_FILE"
+saved_apply_state=$(declare -f apply_state)
+apply_calls=0
+apply_state(){ apply_calls=$((apply_calls + 1)); }
+set_protocol vless name '节点名称：' <<<""
+set_uuid vless <<<"0"
+set_bool vmess tls <<<"0"
+set_number hy2 up_mbps '上行 Mbps：' <<<"0"
+set_port vless <<<"0"
+set_address <<<"0"
+set_certificate <<<"0"
+set_hy2_hop <<<"0"
+set_argo <<<"0"
+set_reality_sni <<<"0"
+rotate_reality_keys <<<"0"
+toggle_protocol vless <<<"0"
+update_core <<<"0"
+protocol_menu <<< $'1\n5\n0\n0\n0'
+[[ $apply_calls -eq 0 ]]
+
+# Reality exposes the first five 3x-ui v3.4.2 defaults and validates before apply.
+saved_probe_reality_sni=$(declare -f probe_reality_sni)
+captured_state=
+apply_state(){ captured_state=$1; }
+probe_reality_sni(){ [[ "$1" == www.cloudflare.com ]]; }
+set_reality_sni <<<"1"
+[[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
+validate_state "$captured_state"
+render_config "$captured_state" "$STATE_DIR/reality-candidate.json"
+"$STATE_DIR/sing-box" check -c "$STATE_DIR/reality-candidate.json"
+eval "$saved_apply_state"
+eval "$saved_probe_reality_sni"
 
 # Subscription/config output follows runtime disable.
 set_case_dir sync
