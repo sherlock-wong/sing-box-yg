@@ -22,7 +22,7 @@ SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubus
 
 ## 菜单、节点与订阅
 
-运行 `sb` 进入主菜单，`2` 是配置菜单：查看启用协议和完整链接、显示二维码、重新生成订阅，或进入协议管理。生成文件在 `/etc/s-box/`：`subscription.txt`（聚合节点）、`subscription.base64`（聚合订阅）、`mihomo-subscription.txt` 和 `sing-box-client.json`。它们都只包含已启用协议，并在每次修改后同步更新。
+运行 `sb` 进入主菜单，`2` 是配置菜单：查看启用协议和完整链接、显示二维码、重新生成订阅，或进入协议管理。生成文件在 `/etc/s-box/`：`subscription.txt`（聚合节点）、`subscription.base64`（聚合订阅）、`mihomo-subscription.txt` 和 `sing-box-client.json`。它们都只包含已启用协议，并在每次修改后同步更新。主菜单 `3` 和配置菜单 `7` 都会从最新 `protocols.json` 重新渲染配置，通过 JSON 与 `sing-box check` 后原子替换并强制重启，避免进程继续使用旧端口或旧凭据。
 
 ## 修改配置
 
@@ -45,7 +45,7 @@ AnyTLS、TUIC 和 Hysteria2 使用普通 TLS：SNI 应与服务端实际证书�
 
 ## 运维与故障处理
 
-主菜单 `3` 重启，`4` 更新/切换内核，`5` 更新脚本，`6` 查看日志，`11` 卸载。自选其他官方内核必须有对应官方 `sha256sum.txt`，没有就拒绝安装。下载、校验或 `sing-box check` 失败时，临时文件会清理，旧配置不会替换。
+主菜单 `3` 应用最新状态并重启，`4` 更新/切换内核，`5` 更新脚本，`6` 查看日志，`11` 卸载。自选其他官方内核必须有对应官方 `sha256sum.txt`，没有就拒绝安装。下载、校验或 `sing-box check` 失败时，临时文件会清理，旧配置不会替换。
 
 遇到连接问题先检查安全组、防火墙、协议端口和 `sb → 6` 日志，再执行主菜单 `3` 重启。切换内核时，如果现有配置不能通过新内核检查，旧内核会保留。卸载需要输入大写 `YES`。
 

@@ -35,6 +35,16 @@ make_state(){
   new_state "$version"
 }
 
+# Explicit apply/restart always consumes the latest state file.
+set_case_dir apply-current
+printf '{"marker":"latest"}\n' > "$STATE_FILE"
+saved_commit_state=$(declare -f commit_state)
+applied_state=
+commit_state(){ applied_state=$(cat); }
+apply_current_state
+[[ $(jq -r '.marker' <<<"$applied_state") == latest ]]
+eval "$saved_commit_state"
+
 enable_tags(){
   local state=$1 tag port=25000
   shift

@@ -289,6 +289,10 @@ commit_state(){ # candidate JSON stdin
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
   green '配置已通过 JSON 与 sing-box check；已原子替换并重启。'
 }
+apply_current_state(){
+  [[ -f "$STATE_FILE" ]] || { red '缺少协议状态文件，无法应用配置。'; return 1; }
+  commit_state < "$STATE_FILE"
+}
 
 address(){ local a; a=$(jq -r '.public_address' "$STATE_FILE"); [[ -n "$a" ]] && printf '%s' "$a" || { curl -4fsS --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '\n' || true; }; }
 uri_host(){ [[ "$1" == *:* && "$1" != \[*\] ]] && printf '[%s]' "$1" || printf '%s' "$1"; }
@@ -798,11 +802,11 @@ protocol_menu(){
 }
 
 configure_menu(){
-  while :; do echo; echo '配置菜单：1 查看节点 2 管理协议 3 对外地址 4 二维码 5 重新生成订阅 6 证书管理 0 返回'; ask '选择：' m
+  while :; do echo; echo '配置菜单：1 查看节点 2 管理协议 3 对外地址 4 二维码 5 重新生成订阅 6 证书管理 7 应用当前配置并重启 0 返回'; ask '选择：' m
     case "$m" in
       1) show_nodes;;2) protocol_menu;;3) set_address;;4) show_qr;;
       5) if confirm_change; then generate_subscriptions; green '订阅已更新。'; fi;;
-      6)certificate_menu;;0|'') return 0;;*) red '无效输入。';;
+      6)certificate_menu;;7)apply_current_state || true;;0|'') return 0;;*) red '无效输入。';;
     esac
   done
 }
@@ -859,8 +863,8 @@ uninstall(){
 main(){
   need_root; if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
   check_version
-  while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 重启  4 更新内核  5 更新脚本  6 日志  7 Acme  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
-    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && restart_service;;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) acme;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) uninstall;;0) exit 0;;*) red '无效输入。';;esac
+  while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 Acme  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
+    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) acme;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) uninstall;;0) exit 0;;*) red '无效输入。';;esac
   done
 }
 [[ "${SBYG_LIB_ONLY:-0}" == 1 ]] || main "$@"
