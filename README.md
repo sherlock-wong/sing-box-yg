@@ -39,13 +39,13 @@
 
 [Sing-box精装桶五合一脚本重磅更新（六）：新增AnyTLS协议；本地IP订阅自动同步更新，通吃Clash/Mihomo、Sing-box与聚合节点](https://youtu.be/LF0-n6-Z6kI)
 
-### VPS专用一键脚本如下（fork 稳定版 v0.0.1）：快捷方式：```sb```
+### VPS专用一键脚本如下（fork 稳定版 v0.0.2）：快捷方式：```sb```
 
 ```
-SBYG_CHANNEL=v0.0.1 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.1/sb.sh)
+SBYG_CHANNEL=v0.0.2 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.2/sb.sh)
 ```
 
-`main` 为后续功能开发版，需要测试最新改动时使用：
+`main` 为后续功能开发版，新增 Vless-Reality 安装时或运行中选择 Sing-box / Xray-core；AnyTLS 等其他协议仍使用 Sing-box。需要测试最新改动时使用：
 
 ```
 SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)

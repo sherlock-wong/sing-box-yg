@@ -3,19 +3,26 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.7'
+SCRIPT_VERSION='v26.7.25-fork.8'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
 STATE_FILE="$STATE_DIR/protocols.json"
 CONFIG_FILE="$STATE_DIR/sb.json"
+XRAY_CONFIG_FILE="$STATE_DIR/xray.json"
 SERVICE_NAME=sing-box
+XRAY_SERVICE_NAME=sing-box-xray
 FORK_BRANCH=
 FORK_RAW=
 
 # Keep this block and DEPENDENCY_LOCKS.md in sync when refreshing a dependency.
 SB_DEFAULT=1.13.14
 SB_110=1.10.7
+XRAY_DEFAULT=26.3.27
+XRAY_AMD64_SHA256=23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+XRAY_ARM64_SHA256=4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c
+XRAY_AMD64_DGST_SHA256=052fc1c5c4bd5b44d799f785792a9631bce8da4aa0d385a783e9a711ad352a58
+XRAY_ARM64_DGST_SHA256=1cafbf4fa746688990a12a6d344b638f706e531f1b81b8b583f9b2164561ad2f
 ACME_COMMIT=8ffa90d950ec9562248b8712634b335e8684e01b
 ACME_SHA256=5e43b5eea48987574730cecf77b5de483d4d7ec6e1e5f242b80f1321863f0521
 WARP_COMMIT=f2f634ba79452a0ffadcd93a6e6524cf4b7b84df
@@ -102,8 +109,8 @@ confirm_change(){
   [[ "$x" == 1 ]]
 }
 load_channel
-normalize_state(){ # schema 1/global certificate -> schema 2/per-protocol certificate binding
-  jq '
+normalize_state(){ # schema 1/2 -> schema 3/per-protocol engine
+  jq --arg xray "$XRAY_DEFAULT" '
     if .schema == 1 then
       .certificates = {
         default: ((.certificate // {}) + {
@@ -118,7 +125,20 @@ normalize_state(){ # schema 1/global certificate -> schema 2/per-protocol certif
       del(.certificate)
     else . end |
     del(.protocols.tuic) |
-    .schema=2
+    .protocols.vless.engine = (.protocols.vless.engine // "sing-box") |
+    .protocols.vmess.engine = "sing-box" |
+    .protocols.hy2.engine = "sing-box" |
+    .protocols.anytls.engine = "sing-box" |
+    .protocols.vless.xray = ({
+      target:((.protocols.vless.sni // "www.apple.com")+":443"),
+      server_names:[(.protocols.vless.sni // "www.apple.com")],
+      fingerprint:"chrome", spider_x:"/", max_time_diff:0,
+      min_client_ver:"", max_client_ver:"",
+      mldsa65_seed:"", mldsa65_verify:"",
+      fallback_profile:"off"
+    } * (.protocols.vless.xray // {})) |
+    .xray_core = (.xray_core // $xray) |
+    .schema=3
   '
 }
 certificate_id_for_tag(){ jq -r --arg t "$1" '.protocols[$t].certificate_id' "$STATE_FILE"; }
@@ -181,9 +201,13 @@ port_available(){ ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]
 protocol_label(){ case "$1" in vless) echo Vless-Reality;; vmess) echo Vmess-WS;; hy2) echo Hysteria2;; anytls) echo AnyTLS;; esac; }
 protocol_transport(){ case "$1" in vless|vmess|anytls) echo TCP;; hy2) echo UDP;; esac; }
 protocol_detail(){
-  local tag=$1 detail mode tls cert_id cert_name
+  local tag=$1 detail mode tls cert_id cert_name engine
   case "$tag" in
-    vless) detail="SNI $(jq -r '.protocols.vless.sni' "$STATE_FILE")";;
+    vless)
+      engine=$(jq -r '.protocols.vless.engine' "$STATE_FILE")
+      [[ "$engine" == xray ]] && engine='Xray' || engine='Sing-box'
+      detail="${engine} · SNI $(jq -r '.protocols.vless.sni' "$STATE_FILE")"
+      ;;
     vmess)
       tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE")
       if [[ "$tls" == true ]]; then
@@ -217,35 +241,48 @@ protocol_status_line(){
   fi
 }
 service_runtime_status(){
+  local state sing=未用 xray=未用
   if [[ ! -f "$STATE_FILE" ]]; then
     printf '未安装'
-  elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    printf '运行中'
-  elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box status >/dev/null 2>&1; then
-    printf '运行中'
-  else
-    printf '已停止'
+    return
   fi
+  state=$(cat "$STATE_FILE")
+  if state_uses_engine "$state" sing-box; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sing-box 2>/dev/null; then sing=运行
+    elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box status >/dev/null 2>&1; then sing=运行
+    else sing=停止
+    fi
+  fi
+  if state_uses_engine "$state" xray; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sing-box-xray 2>/dev/null; then xray=运行
+    elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box-xray status >/dev/null 2>&1; then xray=运行
+    else xray=停止
+    fi
+  fi
+  printf 'SB:%s XR:%s' "$sing" "$xray"
 }
 main_dashboard(){
-  local core='--' protocols=0
+  local core='--' xray= protocols=0
   if [[ -f "$STATE_FILE" ]]; then
     core=$(jq -r '.core // "--"' "$STATE_FILE" 2>/dev/null || printf '%s' '--')
+    jq -e '.protocols.vless.enabled and .protocols.vless.engine=="xray"' "$STATE_FILE" >/dev/null 2>&1 &&
+      xray=" / Xray $(jq -r '.xray_core' "$STATE_FILE")"
     protocols=$(enabled_count 2>/dev/null || printf '0')
   fi
   menu_header "sing-box-yg ${SCRIPT_VERSION}" '主菜单'
-  printf '  渠道：%-18s 服务：%-6s\n' "$FORK_BRANCH" "$(service_runtime_status)"
-  printf '  内核：%-18s 协议：%s 个已启用\n' "$core" "$protocols"
+  printf '  渠道：%-18s 服务：%s\n' "$FORK_BRANCH" "$(service_runtime_status)"
+  printf '  内核：Sing-box %s%s\n' "$core" "$xray"
+  printf '  协议：%s 个已启用\n' "$protocols"
   menu_rule
 }
 cancel_input(){ [[ -z "$1" || "$1" == 0 ]]; }
 apply_state(){ printf '%s\n' "$1" | commit_state || true; }
 
 install_packages(){
-  if command -v apt-get >/dev/null; then apt-get update -y && apt-get install -y curl jq openssl qrencode tar iproute2 iptables coreutils ca-certificates;
-  elif command -v dnf >/dev/null; then dnf install -y curl jq openssl qrencode tar iproute iptables coreutils ca-certificates;
-  elif command -v yum >/dev/null; then yum install -y curl jq openssl qrencode tar iproute iptables coreutils ca-certificates;
-  elif command -v apk >/dev/null; then apk add --no-cache curl jq openssl qrencode tar iproute2 iptables coreutils ca-certificates;
+  if command -v apt-get >/dev/null; then apt-get update -y && apt-get install -y curl jq openssl qrencode tar unzip iproute2 iptables coreutils ca-certificates;
+  elif command -v dnf >/dev/null; then dnf install -y curl jq openssl qrencode tar unzip iproute iptables coreutils ca-certificates;
+  elif command -v yum >/dev/null; then yum install -y curl jq openssl qrencode tar unzip iproute iptables coreutils ca-certificates;
+  elif command -v apk >/dev/null; then apk add --no-cache curl jq openssl qrencode tar unzip iproute2 iptables coreutils ca-certificates;
   else die '仅支持 Debian/Ubuntu、RHEL 系和 Alpine。'; fi
 }
 
@@ -287,7 +324,54 @@ install_singbox(){ # version [destination]; official checksum required for non-d
   green "已下载并校验 Sing-box ${ver}。"
 }
 
-write_service(){
+install_xray(){
+  local arch asset archive_hash digest_hash base archive digest expected
+  arch=$(cpu)
+  case "$arch" in
+    amd64)
+      asset='Xray-linux-64.zip'
+      archive_hash=$XRAY_AMD64_SHA256
+      digest_hash=$XRAY_AMD64_DGST_SHA256
+      ;;
+    arm64)
+      asset='Xray-linux-arm64-v8a.zip'
+      archive_hash=$XRAY_ARM64_SHA256
+      digest_hash=$XRAY_ARM64_DGST_SHA256
+      ;;
+  esac
+  base="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_DEFAULT}"
+  WORKDIR=$(tmpdir); archive="$WORKDIR/$asset"; digest="$WORKDIR/$asset.dgst"
+  download_verified "$base/$asset.dgst" "$digest_hash" "$digest" "Xray ${XRAY_DEFAULT} 官方摘要"
+  expected=$(awk -F'= *' '$1=="SHA2-256"{print tolower($2)}' "$digest")
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$expected" == "$archive_hash" ]] ||
+    die 'Xray 官方摘要与预置锁定值不一致，拒绝安装。'
+  download_verified "$base/$asset" "$expected" "$archive" "Xray ${XRAY_DEFAULT}/${arch}"
+  unzip -q "$archive" xray -d "$WORKDIR" || die 'Xray 发布包内容无效。'
+  [[ -x "$WORKDIR/xray" ]] || die 'Xray 发布包缺少可执行文件。'
+  install -d -m 755 "$STATE_DIR"
+  install -m 755 "$WORKDIR/xray" "$STATE_DIR/xray"
+  printf '%s\n' "$XRAY_DEFAULT" > "$STATE_DIR/xray-version"
+  printf '%s\n' "$archive_hash" > "$STATE_DIR/xray-archive.sha256"
+  chmod 600 "$STATE_DIR/xray-version" "$STATE_DIR/xray-archive.sha256"
+  green "已下载并双重校验 Xray-core ${XRAY_DEFAULT}。"
+}
+xray_install_valid(){
+  local expected reported
+  [[ -x "$STATE_DIR/xray" &&
+     -r "$STATE_DIR/xray-version" &&
+     -r "$STATE_DIR/xray-archive.sha256" ]] || return 1
+  case "$(cpu)" in
+    amd64) expected=$XRAY_AMD64_SHA256;;
+    arm64) expected=$XRAY_ARM64_SHA256;;
+  esac
+  [[ $(cat "$STATE_DIR/xray-version") == "$XRAY_DEFAULT" &&
+     $(cat "$STATE_DIR/xray-archive.sha256") == "$expected" ]] || return 1
+  reported=$("$STATE_DIR/xray" version 2>/dev/null) || return 1
+  reported=${reported%%$'\n'*}
+  [[ "$reported" == "Xray ${XRAY_DEFAULT} "* ]]
+}
+
+write_services(){
   if command -v systemctl >/dev/null; then
     cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
@@ -296,6 +380,17 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=$STATE_DIR/sing-box run -c $CONFIG_FILE
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /etc/systemd/system/sing-box-xray.service <<EOF
+[Unit]
+Description=sing-box-yg Xray
+After=network-online.target
+[Service]
+Type=simple
+ExecStart=$STATE_DIR/xray run -c $XRAY_CONFIG_FILE
 Restart=on-failure
 [Install]
 WantedBy=multi-user.target
@@ -313,6 +408,16 @@ depend() { need net; }
 EOF
     chmod 755 /etc/init.d/sing-box
     rc-update add sing-box default >/dev/null 2>&1 || true
+    cat > /etc/init.d/sing-box-xray <<EOF
+#!/sbin/openrc-run
+description="sing-box-yg Xray"
+command="$STATE_DIR/xray"
+command_args="run -c $XRAY_CONFIG_FILE"
+command_background=true
+pidfile="/run/xray.pid"
+depend() { need net; }
+EOF
+    chmod 755 /etc/init.d/sing-box-xray
   else
     return 1
   fi
@@ -321,12 +426,41 @@ systemd_enable_restart(){
   systemctl enable "$1" >/dev/null 2>&1 || return 1
   systemctl restart "$1"
 }
-restart_service(){
+state_uses_engine(){ # state-json engine
+  jq -e --arg engine "$2" '[.protocols[] | select(.enabled and .engine==$engine)] | length > 0' <<<"$1" >/dev/null
+}
+stop_disable_service(){
+  local service=$1
   if command -v systemctl >/dev/null; then
-    systemd_enable_restart "$SERVICE_NAME"
+    systemctl disable --now "$service" >/dev/null 2>&1 || true
   else
-    rc-service sing-box restart
+    rc-service "$service" stop >/dev/null 2>&1 || true
+    rc-update del "$service" default >/dev/null 2>&1 || true
   fi
+}
+reconcile_core_services(){ # state-json
+  local state=$1
+  # Stop both managed cores first: changing the owner of a Reality port cannot
+  # succeed if the old core is still listening on that same port.
+  stop_disable_service "$SERVICE_NAME"
+  stop_disable_service "$XRAY_SERVICE_NAME"
+  if command -v systemctl >/dev/null; then
+    if state_uses_engine "$state" sing-box; then systemd_enable_restart "$SERVICE_NAME"; fi
+    if state_uses_engine "$state" xray; then systemd_enable_restart "$XRAY_SERVICE_NAME"; fi
+  else
+    if state_uses_engine "$state" sing-box; then
+      rc-update add sing-box default >/dev/null 2>&1 || true
+      rc-service sing-box restart
+    fi
+    if state_uses_engine "$state" xray; then
+      rc-update add sing-box-xray default >/dev/null 2>&1 || true
+      rc-service sing-box-xray restart
+    fi
+  fi
+}
+restart_service(){
+  [[ -f "$STATE_FILE" ]] || return 1
+  reconcile_core_services "$(cat "$STATE_FILE")"
 }
 
 new_state(){
@@ -344,8 +478,8 @@ new_state(){
     -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
     -addext 'extendedKeyUsage=serverAuth' \
     -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
-  jq -n --arg core "$core" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" \
-    '{schema:2,core:$core,public_address:"",protocols:{vless:{enabled:false,name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid},vmess:{enabled:false,name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default"}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true}}}'
+  jq -n --arg core "$core" --arg xray "$XRAY_DEFAULT" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" \
+    '{schema:3,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default"}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true}}}'
 }
 
 choose_protocol_tags(){ # core -> space-separated tags
@@ -369,6 +503,15 @@ choose_protocol_tags(){ # core -> space-separated tags
     printf '%s\n' "${chosen[*]}"
     return 0
   done
+}
+choose_initial_reality_engine(){
+  local choice
+  menu_header '安装向导：Reality 服务端内核' '主菜单 / 安装 / Vless-Reality' >&2
+  menu_item 1 'Sing-box（推荐入门，与其他协议共用进程）' >&2
+  menu_item 2 "Xray-core ${XRAY_DEFAULT}（完整 Reality 服务端能力）" >&2
+  menu_back '取消安装并返回主菜单' >&2
+  ask '请选择 [0-2]：' choice
+  case "$choice" in 1)printf 'sing-box\n';;2)printf 'xray\n';;0|'')return 2;;*)red '无效输入，安装已取消。' >&2; return 2;;esac
 }
 state_for_protocol_tags(){ # core "tag tag ..." -> JSON state
   local core=$1 tags=$2 p tag state
@@ -403,17 +546,52 @@ render_config(){ # state output
   local s=$1 out=$2 tag ib; jq -n '{log:{level:"info",timestamp:true},inbounds:[],outbounds:[{type:"direct",tag:"direct"},{type:"block",tag:"block"}]}' > "$out"
   for tag in vless vmess hy2 anytls; do
     jq -e --arg t "$tag" '.protocols[$t].enabled' <<<"$s" >/dev/null || continue
+    [[ $(jq -r --arg t "$tag" '.protocols[$t].engine' <<<"$s") == sing-box ]] || continue
     ib=$(inbound_for "$s" "$tag") || return 1
     jq --argjson i "$ib" '.inbounds += [$i]' "$out" > "$out.next" && mv "$out.next" "$out"
   done
-  json "$out" && [[ $(jq '.inbounds|length' "$out") -gt 0 ]]
+  json "$out"
+}
+
+render_xray_config(){ # state output
+  local s=$1 out=$2 inbound fallback
+  jq -n '{log:{loglevel:"warning"},inbounds:[],outbounds:[
+    {protocol:"freedom",tag:"direct",settings:{}},
+    {protocol:"blackhole",tag:"blocked",settings:{}}
+  ]}' > "$out"
+  jq -e '.protocols.vless.enabled and .protocols.vless.engine=="xray"' <<<"$s" >/dev/null || return 0
+  fallback=$(jq -c '
+    .protocols.vless.xray.fallback_profile |
+    if .=="balanced" then
+      {limitFallbackUpload:{afterBytes:65536,bytesPerSec:1048576,burstBytesPerSec:2097152},
+       limitFallbackDownload:{afterBytes:65536,bytesPerSec:5242880,burstBytesPerSec:10485760}}
+    elif .=="strict" then
+      {limitFallbackUpload:{afterBytes:32768,bytesPerSec:262144,burstBytesPerSec:524288},
+       limitFallbackDownload:{afterBytes:32768,bytesPerSec:1048576,burstBytesPerSec:2097152}}
+    else {} end
+  ' <<<"$s")
+  inbound=$(jq -c --argjson fallback "$fallback" '
+    .protocols.vless as $p | $p.xray as $x |
+    {tag:"vless-xray",listen:"::",port:$p.port,protocol:"vless",
+     settings:{clients:[{id:$p.uuid,flow:"xtls-rprx-vision"}],decryption:"none"},
+     streamSettings:{network:"tcp",security:"reality",tcpSettings:{header:{type:"none"}},
+       realitySettings:({
+         show:false,xver:0,target:$x.target,serverNames:$x.server_names,
+         privateKey:$p.private_key,minClientVer:$x.min_client_ver,
+         maxClientVer:$x.max_client_ver,maxTimeDiff:$x.max_time_diff,
+         shortIds:[$p.short_id],mldsa65Seed:$x.mldsa65_seed
+       } + $fallback)}}' <<<"$s") || return 1
+  jq --argjson inbound "$inbound" '.inbounds += [$inbound]' "$out" > "$out.next" &&
+    mv "$out.next" "$out"
+  json "$out"
 }
 
 validate_state(){
   local s=$1 tag p
   jq -e '
-    .schema==2 and
+    .schema==3 and
     (.core|type=="string") and
+    (.xray_core|type=="string") and
     (.public_address|type=="string") and
     (.certificates|type=="object") and (.certificates|length>0) and
     ([.certificates[] |
@@ -425,10 +603,27 @@ validate_state(){
     ([.protocols.vmess,.protocols.hy2,.protocols.anytls] |
       all(.certificate_id|type=="string") and all(.certificate_id as $id | $certs[$id] != null)) and
     ([.protocols[]|select(.enabled)]|length)>0 and
+    (.protocols.vless.engine=="sing-box" or .protocols.vless.engine=="xray") and
+    .protocols.vmess.engine=="sing-box" and
+    .protocols.hy2.engine=="sing-box" and
+    .protocols.anytls.engine=="sing-box" and
+    (.protocols.vless.xray |
+      (.target|type=="string") and (.server_names|type=="array") and
+      (.server_names|length>0) and all(.server_names[]; type=="string" and length>0) and
+      (.fingerprint|IN("chrome","firefox","safari","edge","random")) and
+      (.spider_x|type=="string") and (.spider_x|startswith("/")) and
+      (.max_time_diff|type=="number") and (.max_time_diff>=0) and
+      (.mldsa65_seed|type=="string") and (.mldsa65_verify|type=="string") and
+      ((.mldsa65_seed=="" and .mldsa65_verify=="") or
+       (.mldsa65_seed!="" and .mldsa65_verify!="")) and
+      (.fallback_profile|IN("off","balanced","strict"))) and
+    (.protocols.vless.xray.target == (.protocols.vless.sni+":443")) and
+    (.protocols.vless as $v | $v.xray.server_names | index($v.sni) != null) and
     (.protocols.vmess.tls|type=="boolean") and
     (.protocols.hy2.up_mbps|type=="number") and (.protocols.hy2.up_mbps>0) and
     (.protocols.hy2.down_mbps|type=="number") and (.protocols.hy2.down_mbps>0)
   ' --argjson certs "$(jq '.certificates' <<<"$s")" <<<"$s" >/dev/null || return 1
+  [[ $(jq -r '.xray_core' <<<"$s") == "$XRAY_DEFAULT" ]] || return 1
   [[ $(jq -r '.core' <<<"$s") != 1.10* ]] || ! jq -e '.protocols.anytls.enabled' <<<"$s" >/dev/null || return 1
   for tag in vless vmess hy2 anytls; do
     jq -e --arg t "$tag" '.protocols[$t].enabled' <<<"$s" >/dev/null || continue
@@ -436,6 +631,9 @@ validate_state(){
   done
   valid_uuid "$(jq -r '.protocols.vless.uuid' <<<"$s")" || return 1
   valid_uuid "$(jq -r '.protocols.vmess.uuid' <<<"$s")" || return 1
+  [[ $(jq -r '.protocols.vless.private_key' <<<"$s") =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+  [[ $(jq -r '.protocols.vless.public_key' <<<"$s") =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+  [[ $(jq -r '.protocols.vless.short_id' <<<"$s") =~ ^([0-9a-fA-F]{2}){1,8}$ ]] || return 1
   [[ $(jq -r '.protocols.vmess.path' <<<"$s") == /* ]] || return 1
   [[ $(jq -r '.protocols.hy2.udp_hop' <<<"$s") =~ ^$|^[1-9][0-9]{0,4}:[1-9][0-9]{0,4}$ ]] || return 1
   [[ $(jq '[.protocols[] | select(.enabled) | .port] | unique | length' <<<"$s") == $(jq '[.protocols[] | select(.enabled)] | length' <<<"$s") ]]
@@ -551,40 +749,56 @@ ufw_remove_managed_tag(){
 }
 
 commit_state(){ # candidate JSON stdin
-  local candidate tmp state_tmp config_tmp old_state old_config ufw_transaction
+  local candidate tmp state_tmp config_tmp xray_tmp old_state old_config old_xray ufw_transaction
   candidate=$(normalize_state <<<"$(cat)") ||
     { red '状态 JSON 无效，原配置未改变。'; return 1; }
   validate_state "$candidate" || { red '状态无效：检查协议数量、输入类型、UUID、Path、证书模式与端口。'; return 1; }
-  tmp=$(tmpdir); state_tmp="$tmp/protocols.json"; config_tmp="$tmp/sb.json"; old_state="$tmp/old-state.json"; old_config="$tmp/old-config.json"; ufw_transaction="$tmp/ufw-added.tsv"
+  tmp=$(tmpdir)
+  state_tmp="$tmp/protocols.json"; config_tmp="$tmp/sb.json"; xray_tmp="$tmp/xray.json"
+  old_state="$tmp/old-state.json"; old_config="$tmp/old-config.json"; old_xray="$tmp/old-xray.json"
+  ufw_transaction="$tmp/ufw-added.tsv"
   printf '%s\n' "$candidate" > "$state_tmp"
   render_config "$candidate" "$config_tmp" || { red 'JSON 渲染失败，原配置未改变。'; return 1; }
+  render_xray_config "$candidate" "$xray_tmp" || { red 'Xray JSON 渲染失败，原配置未改变。'; return 1; }
   "$STATE_DIR/sing-box" check -c "$config_tmp" || { red 'sing-box check 失败，原配置未改变。'; return 1; }
+  if state_uses_engine "$candidate" xray; then
+    xray_install_valid || { red 'Xray 内核版本或安装校验标记无效，请重新选择 Xray 并完成下载。'; return 1; }
+    "$STATE_DIR/xray" run -test -c "$xray_tmp" ||
+      { red 'Xray 配置检查失败，原配置未改变。'; return 1; }
+  fi
   install -d -m 755 "$STATE_DIR"
   [[ -f "$STATE_FILE" ]] && cp "$STATE_FILE" "$old_state"
   [[ -f "$CONFIG_FILE" ]] && cp "$CONFIG_FILE" "$old_config"
+  [[ -f "$XRAY_CONFIG_FILE" ]] && cp "$XRAY_CONFIG_FILE" "$old_xray"
   ufw_prepare_candidate "$candidate" "$ufw_transaction" || return 1
-  chmod 600 "$state_tmp" "$config_tmp"
-  mv "$state_tmp" "$STATE_FILE"; mv "$config_tmp" "$CONFIG_FILE"
-  if ! write_service || ! restart_service; then
+  chmod 600 "$state_tmp" "$config_tmp" "$xray_tmp"
+  mv "$state_tmp" "$STATE_FILE"; mv "$config_tmp" "$CONFIG_FILE"; mv "$xray_tmp" "$XRAY_CONFIG_FILE"
+  if ! write_services || ! reconcile_core_services "$candidate"; then
     red '重启失败，正在回滚原配置。'
     if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
     if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    if [[ -f "$old_xray" ]]; then cp "$old_xray" "$XRAY_CONFIG_FILE"; else rm -f "$XRAY_CONFIG_FILE"; fi
     ufw_rollback_candidate "$ufw_transaction"
-    restart_service || true
+    if [[ -f "$old_state" ]]; then reconcile_core_services "$(cat "$old_state")" || true
+    else stop_disable_service sing-box; stop_disable_service sing-box-xray
+    fi
     return 1
   fi
   if ! generate_subscriptions; then
     red '订阅安全参数生成失败，正在回滚原配置。'
     if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
     if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    if [[ -f "$old_xray" ]]; then cp "$old_xray" "$XRAY_CONFIG_FILE"; else rm -f "$XRAY_CONFIG_FILE"; fi
     ufw_rollback_candidate "$ufw_transaction"
-    restart_service || true
+    if [[ -f "$old_state" ]]; then reconcile_core_services "$(cat "$old_state")" || true
+    else stop_disable_service sing-box; stop_disable_service sing-box-xray
+    fi
     return 1
   fi
   ufw_finalize_candidate "$old_state" "$candidate"
   reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
-  green '配置已通过 JSON 与 sing-box check；已原子替换并重启。'
+  green '配置已通过 JSON、Sing-box 与 Xray（如启用）检查；双内核配置已原子替换并应用。'
 }
 apply_current_state(){
   [[ -f "$STATE_FILE" ]] || { red '缺少协议状态文件，无法应用配置。'; return 1; }
@@ -593,7 +807,7 @@ apply_current_state(){
 ensure_current_state_schema(){
   local normalized supported
   [[ -f "$STATE_FILE" ]] || return 0
-  jq -e '.schema==2 and (.protocols|has("tuic")|not)' "$STATE_FILE" >/dev/null && return 0
+  jq -e '.schema==3 and (.protocols|has("tuic")|not)' "$STATE_FILE" >/dev/null && return 0
   normalized=$(normalize_state < "$STATE_FILE") || return 1
   supported=$(jq '[.protocols[]|select(.enabled)]|length' <<<"$normalized")
   if ((supported == 0)); then
@@ -612,7 +826,7 @@ client_outbound_for(){
   local tag=$1 host=$2 server port argo pin
   port=$(jq -r ".protocols.$tag.port" "$STATE_FILE"); server=$host
   case "$tag" in
-    vless) jq -c --arg s "$server" --argjson p "$port" '.protocols.vless as $x | {type:"vless",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,flow:"xtls-rprx-vision",tls:{enabled:true,server_name:$x.sni,utls:{enabled:true,fingerprint:"chrome"},reality:{enabled:true,public_key:$x.public_key,short_id:$x.short_id}}}' "$STATE_FILE";;
+    vless) jq -c --arg s "$server" --argjson p "$port" '.protocols.vless as $x | {type:"vless",tag:$x.name,server:$s,server_port:$p,uuid:$x.uuid,flow:"xtls-rprx-vision",tls:{enabled:true,server_name:$x.sni,utls:{enabled:true,fingerprint:$x.xray.fingerprint},reality:{enabled:true,public_key:$x.public_key,short_id:$x.short_id}}}' "$STATE_FILE";;
     vmess)
       argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE")
       [[ -n "$argo" ]] && { server=$argo; port=443; } || { server=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); }
@@ -644,7 +858,7 @@ mihomo_proxy_for(){
   local tag=$1 host=$2 server port argo
   port=$(jq -r ".protocols.$tag.port" "$STATE_FILE"); server=$host
   case "$tag" in
-    vless) jq -c --arg s "$server" --argjson p "$port" '.protocols.vless as $x | {name:$x.name,type:"vless",server:$s,port:$p,uuid:$x.uuid,network:"tcp",tls:true,udp:true,flow:"xtls-rprx-vision","client-fingerprint":"chrome","reality-opts":{"public-key":$x.public_key,"short-id":$x.short_id},servername:$x.sni}' "$STATE_FILE";;
+    vless) jq -c --arg s "$server" --argjson p "$port" '.protocols.vless as $x | {name:$x.name,type:"vless",server:$s,port:$p,uuid:$x.uuid,network:"tcp",tls:true,udp:true,flow:"xtls-rprx-vision","client-fingerprint":$x.xray.fingerprint,"reality-opts":{"public-key":$x.public_key,"short-id":$x.short_id},servername:$x.sni}' "$STATE_FILE";;
     vmess)
       argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE")
       [[ -n "$argo" ]] && { server=$argo; port=443; } || { server=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); }
@@ -654,7 +868,7 @@ mihomo_proxy_for(){
   esac
 }
 generate_subscriptions(){
-  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy insecure cert_mode xray_pin cert
+  local out="$STATE_DIR/subscription.txt" host endpoint tag name port uuid path sni pk sid password line tls argo hop ob proxy insecure cert_mode xray_pin cert fp spx pqv
   local client="$STATE_DIR/sing-box-client.json" mihomo="$STATE_DIR/mihomo.yaml"
   host=$(address); endpoint=$(uri_host "$host")
   : > "$out"
@@ -680,7 +894,16 @@ generate_subscriptions(){
       fi
     fi
     case "$tag" in
-      vless) uuid=$(jq -r '.protocols.vless.uuid' "$STATE_FILE"); sni=$(jq -r '.protocols.vless.sni' "$STATE_FILE"); pk=$(jq -r '.protocols.vless.public_key' "$STATE_FILE"); sid=$(jq -r '.protocols.vless.short_id' "$STATE_FILE"); line="vless://${uuid}@${endpoint}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pk}&sid=${sid}&type=tcp#$(urlencode "$name")";;
+      vless)
+        uuid=$(jq -r '.protocols.vless.uuid' "$STATE_FILE")
+        sni=$(jq -r '.protocols.vless.sni' "$STATE_FILE")
+        pk=$(jq -r '.protocols.vless.public_key' "$STATE_FILE")
+        sid=$(jq -r '.protocols.vless.short_id' "$STATE_FILE")
+        fp=$(jq -r '.protocols.vless.xray.fingerprint' "$STATE_FILE")
+        spx=$(jq -r '.protocols.vless.xray.spider_x' "$STATE_FILE")
+        pqv=$(jq -r '.protocols.vless.xray.mldsa65_verify' "$STATE_FILE")
+        line="vless://${uuid}@${endpoint}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=${fp}&pbk=${pk}&sid=${sid}&spx=$(urlencode "$spx")$([[ -n "$pqv" ]] && printf '&pqv=%s' "$(urlencode "$pqv")")&type=tcp#$(urlencode "$name")"
+        ;;
       vmess) uuid=$(jq -r '.protocols.vmess.uuid' "$STATE_FILE"); path=$(jq -r '.protocols.vmess.path' "$STATE_FILE"); tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE"); argo=$(jq -r '.protocols.vmess.argo_domain' "$STATE_FILE"); [[ -n "$argo" ]] && { endpoint=$argo; port=443; tls=true; } || endpoint=$(jq -r --arg d "$host" '.protocols.vmess.cdn // "" | if length>0 then . else $d end' "$STATE_FILE"); line="vmess://$(jq -nc --arg add "$endpoint" --argjson p "$port" --arg id "$uuid" --arg path "$path" --arg ps "$name" --arg tls "$tls" --arg host "${argo:-$(jq -r '.protocols.vmess.domain' "$STATE_FILE")}" '{v:"2",ps:$ps,add:$add,port:($p|tostring),id:$id,aid:"0",net:"ws",type:"none",host:$host,path:$path,tls:(if $tls=="true" then "tls" else "" end),sni:$host}' | base64 | tr -d '\n')";;
       hy2) password=$(jq -r '.protocols.hy2.password' "$STATE_FILE"); sni=$(jq -r '.protocols.hy2.domain' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); line="hysteria2://$(urlencode "$password")@${endpoint}:${port}?security=tls&sni=${sni}&insecure=${insecure}$([[ -n "$hop" ]] && printf '&mport=%s' "$hop")#$(urlencode "$name")";;
       anytls)
@@ -856,6 +1079,155 @@ rotate_reality_keys(){
   [[ -n "$priv" && -n "$pub" ]] || { red '密钥生成失败。'; return 0; }
   apply_state "$(jq --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '.protocols.vless.private_key=$priv | .protocols.vless.public_key=$pub | .protocols.vless.short_id=$sid' "$STATE_FILE")"
 }
+set_reality_engine(){
+  local choice current selected candidate detail
+  current=$(jq -r '.protocols.vless.engine' "$STATE_FILE")
+  menu_header 'Reality 服务端内核' '主菜单 / 配置 / 协议 / Vless-Reality / 内核'
+  printf '  当前：%s\n\n' "$([[ "$current" == xray ]] && printf 'Xray-core %s' "$(jq -r '.xray_core' "$STATE_FILE")" || printf 'Sing-box %s' "$(jq -r '.core' "$STATE_FILE")")"
+  menu_item 1 'Sing-box（简洁、与其他协议共用进程）'
+  menu_item 2 "Xray-core ${XRAY_DEFAULT}（完整 Reality 服务端能力）"
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1) selected=sing-box;;2) selected=xray;;*) red '无效输入。'; return 0;;esac
+  [[ "$selected" != "$current" ]] || { yellow '已是当前内核，未做修改。'; return 0; }
+  detail='端口和节点凭据保持不变；新旧服务会在配置校验通过后事务切换。'
+  if [[ "$selected" == xray ]] && ! xray_install_valid; then
+    detail+=" 需要下载 Xray-core ${XRAY_DEFAULT}，发布包与官方摘要均会进行 SHA256 校验。"
+  fi
+  confirm_change '确认切换 Vless-Reality 服务端内核？' "$detail" || return 0
+  if [[ "$selected" == xray ]] && ! xray_install_valid; then
+    command -v unzip >/dev/null 2>&1 || install_packages
+    install_xray
+  fi
+  candidate=$(jq --arg engine "$selected" '.protocols.vless.engine=$engine' "$STATE_FILE")
+  apply_state "$candidate"
+}
+set_xray_fingerprint(){
+  local choice value candidate
+  menu_header 'Reality 客户端指纹' '主菜单 / 配置 / Vless-Reality / Xray 参数'
+  menu_item 1 'Chrome（推荐）'
+  menu_item 2 'Firefox'
+  menu_item 3 'Safari'
+  menu_item 4 'Edge'
+  menu_item 5 'Random'
+  menu_back '返回 Xray 参数'
+  ask '请选择 [0-5]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1)value=chrome;;2)value=firefox;;3)value=safari;;4)value=edge;;5)value=random;;*)red '无效输入。'; return 0;;esac
+  candidate=$(jq --arg value "$value" '.protocols.vless.xray.fingerprint=$value' "$STATE_FILE")
+  apply_state "$candidate"
+}
+set_xray_spider_x(){
+  local choice value candidate
+  menu_header 'Reality SpiderX' '主菜单 / 配置 / Vless-Reality / Xray 参数'
+  menu_item 1 '使用 /（兼容默认）'
+  menu_item 2 '自动生成随机路径'
+  menu_back '返回 Xray 参数'
+  ask '请选择 [0-2]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1)value=/;;2)value="/$(openssl rand -hex 8)";;*)red '无效输入。'; return 0;;esac
+  candidate=$(jq --arg value "$value" '.protocols.vless.xray.spider_x=$value' "$STATE_FILE")
+  apply_state "$candidate"
+}
+set_xray_time_diff(){
+  local choice value candidate
+  menu_header 'Reality 最大时间差' '主菜单 / 配置 / Vless-Reality / Xray 参数'
+  menu_item 1 '不限制（0，兼容性最好）'
+  menu_item 2 '30 秒'
+  menu_item 3 '60 秒'
+  menu_item 4 '5 分钟'
+  menu_back '返回 Xray 参数'
+  ask '请选择 [0-4]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1)value=0;;2)value=30000;;3)value=60000;;4)value=300000;;*)red '无效输入。'; return 0;;esac
+  candidate=$(jq --argjson value "$value" '.protocols.vless.xray.max_time_diff=$value' "$STATE_FILE")
+  apply_state "$candidate"
+}
+set_xray_fallback_profile(){
+  local choice value candidate
+  menu_header 'Reality 非认证流量限制' '主菜单 / 配置 / Vless-Reality / Xray 参数'
+  dim '该设置限制未通过 Reality 认证、被转发到目标站点的流量。'
+  menu_item 1 '关闭限制（官方默认，同 ASN 目标推荐）'
+  menu_item 2 '均衡限制（CDN 目标防偷跑）'
+  menu_item 3 '严格限制（更易形成流量特征）'
+  menu_back '返回 Xray 参数'
+  ask '请选择 [0-3]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1)value=off;;2)value=balanced;;3)value=strict;;*)red '无效输入。'; return 0;;esac
+  candidate=$(jq --arg value "$value" '.protocols.vless.xray.fallback_profile=$value' "$STATE_FILE")
+  apply_state "$candidate"
+}
+xray_mldsa_target_compatible(){
+  local target=$1 output cert_length pq
+  output=$("$STATE_DIR/xray" tls ping "$target" 2>&1) || return 1
+  cert_length=$(awk -F': *' '/Certificate chain.s total length:/{if ($2+0>max) max=$2+0} END{print max+0}' <<<"$output")
+  pq=$(awk -F': *' '/TLS Post-Quantum key exchange:/{if ($2 ~ /^true/) found=1} END{print found+0}' <<<"$output")
+  printf '  目标检测：证书链 %s bytes，X25519MLKEM768 %s\n' \
+    "$cert_length" "$([[ "$pq" == 1 ]] && printf '支持' || printf '不支持')"
+  ((cert_length > 3500 && pq == 1))
+}
+set_xray_mldsa65(){
+  local choice pair seed verify candidate target
+  menu_header 'Reality ML-DSA-65' '主菜单 / 配置 / Vless-Reality / Xray 参数'
+  menu_item 1 '自动生成并启用'
+  menu_item 2 '关闭'
+  menu_back '返回 Xray 参数'
+  ask '请选择 [0-2]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in
+    1)
+      [[ -x "$STATE_DIR/xray" ]] || { red '请先把 Reality 服务端内核切换为 Xray。'; return 0; }
+      target=$(jq -r '.protocols.vless.xray.target' "$STATE_FILE")
+      blue "正在用 Xray 检查 ${target} 的证书长度和后量子密钥交换..."
+      xray_mldsa_target_compatible "$target" || {
+        red '目标不满足安全预设：证书链需大于 3500 bytes 且支持 X25519MLKEM768。'
+        yellow '请先在 Reality SNI 扫描中更换目标；原配置未改变。'
+        return 0
+      }
+      pair=$("$STATE_DIR/xray" mldsa65)
+      seed=$(awk -F': ' '/^Seed:/{print $2}' <<<"$pair")
+      verify=$(awk -F': ' '/^Verify:/{print $2}' <<<"$pair")
+      [[ "$seed" =~ ^[A-Za-z0-9_-]+$ && "$verify" =~ ^[A-Za-z0-9_-]+$ ]] ||
+        { red 'ML-DSA-65 密钥生成失败，原配置未改变。'; return 0; }
+      candidate=$(jq --arg seed "$seed" --arg verify "$verify" '
+        .protocols.vless.xray.mldsa65_seed=$seed |
+        .protocols.vless.xray.mldsa65_verify=$verify
+      ' "$STATE_FILE")
+      ;;
+    2)
+      candidate=$(jq '.protocols.vless.xray.mldsa65_seed="" | .protocols.vless.xray.mldsa65_verify=""' "$STATE_FILE")
+      ;;
+    *) red '无效输入。'; return 0;;
+  esac
+  apply_state "$candidate"
+}
+xray_reality_menu(){
+  local choice
+  [[ $(jq -r '.protocols.vless.engine' "$STATE_FILE") == xray ]] ||
+    { yellow '这些参数仅在 Xray 服务端内核下生效，请先切换内核。'; return 0; }
+  while :; do
+    menu_header 'Xray Reality 参数' '主菜单 / 配置 / 协议 / Vless-Reality / Xray 参数'
+    printf '  指纹：%-8s SpiderX：%s\n' \
+      "$(jq -r '.protocols.vless.xray.fingerprint' "$STATE_FILE")" \
+      "$(jq -r '.protocols.vless.xray.spider_x' "$STATE_FILE")"
+    printf '  时间差：%-8s ML-DSA-65：%-6s 非认证限制：%s\n\n' \
+      "$(jq -r '.protocols.vless.xray.max_time_diff' "$STATE_FILE") ms" \
+      "$(jq -r 'if .protocols.vless.xray.mldsa65_seed=="" then "关闭" else "启用" end' "$STATE_FILE")" \
+      "$(jq -r '.protocols.vless.xray.fallback_profile' "$STATE_FILE")"
+    menu_item 1 '选择客户端指纹'
+    menu_item 2 '设置 SpiderX'
+    menu_item 3 '设置最大时间差'
+    menu_item 4 '生成或关闭 ML-DSA-65'
+    menu_item 5 '选择非认证流量限制'
+    menu_back '返回专项参数'
+    ask '请选择 [0-5]：' choice
+    case "$choice" in
+      1)set_xray_fingerprint;;2)set_xray_spider_x;;3)set_xray_time_diff;;
+      4)set_xray_mldsa65;;5)set_xray_fallback_profile;;0|'')return 0;;*)red '无效输入。';;
+    esac
+  done
+}
 probe_reality_once(){ # host [sample-number] -> DNS + TCP + TLS handshake milliseconds
   local host=$1 timing
   timing=$(curl --noproxy '*' -sS -I -o /dev/null --connect-timeout 8 --max-time 8 \
@@ -952,7 +1324,15 @@ choose_scanned_reality_sni(){
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-5]$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
   IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
-  candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
+  jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
+    yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
+  candidate=$(jq --arg x "$host" '
+    .protocols.vless.sni=$x |
+    .protocols.vless.xray.target=($x+":443") |
+    .protocols.vless.xray.server_names=[$x] |
+    .protocols.vless.xray.mldsa65_seed="" |
+    .protocols.vless.xray.mldsa65_verify=""
+  ' "$STATE_FILE")
   apply_state "$candidate"
 }
 set_reality_sni(){
@@ -973,7 +1353,15 @@ set_reality_sni(){
       [[ "$host" != *:* && ! "$host" =~ ^[0-9.]+$ ]] || { red 'Reality SNI 必须填写域名。'; return 0; }
       results=$(scan_reality_candidates "$host") || true
       [[ -n "$results" ]] || { red '该目标未通过稳定性和 Reality 兼容性检测，原配置未改变。'; return 0; }
-      candidate=$(jq --arg x "$host" '.protocols.vless.sni=$x' "$STATE_FILE")
+      jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
+        yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
+      candidate=$(jq --arg x "$host" '
+        .protocols.vless.sni=$x |
+        .protocols.vless.xray.target=($x+":443") |
+        .protocols.vless.xray.server_names=[$x] |
+        .protocols.vless.xray.mldsa65_seed="" |
+        .protocols.vless.xray.mldsa65_verify=""
+      ' "$STATE_FILE")
       apply_state "$candidate"
       ;;
     *) red '无效输入。';;
@@ -1272,7 +1660,7 @@ set_hy2_hop(){
       ask '范围，例如 20000:30000（回车/0 返回上一级）：' x
       cancel_input "$x" && return 0
       [[ "$x" =~ ^([1-9][0-9]{0,4}):([1-9][0-9]{0,4})$ ]] || { red '范围格式无效。'; return 0; }
-    start=${BASH_REMATCH[1]}; end=${BASH_REMATCH[2]}
+      start=${BASH_REMATCH[1]}; end=${BASH_REMATCH[2]}
       valid_port "$start" && valid_port "$end" && (( start <= end )) || { red '端口范围无效。'; return 0; }
       ;;
     2) x=;;
@@ -1352,9 +1740,14 @@ specialty_menu(){
       vless)
         menu_item 1 'Reality SNI 与目标扫描'
         menu_item 2 '轮换 Reality 密钥和 Short ID'
+        menu_item 3 '切换 Sing-box / Xray 服务端内核'
+        menu_item 4 'Xray Reality 参数向导'
         menu_back '返回协议设置'
-        ask '请选择 [0-2]：' choice
-        case "$choice" in 1)set_reality_sni;;2)rotate_reality_keys;;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-4]：' choice
+        case "$choice" in
+          1)set_reality_sni;;2)rotate_reality_keys;;3)set_reality_engine;;
+          4)xray_reality_menu;;0|'')return 0;;*)red '无效输入。';;
+        esac
         ;;
       vmess)
         menu_item 1 '修改 WS Path'
@@ -1462,7 +1855,7 @@ offer_tls_certificate_setup(){
 }
 
 install_flow(){
-  local core choice state tags tag labels=
+  local core choice state tags tag labels= vless_engine=sing-box
   menu_header '安装向导：选择内核' '主菜单 / 安装'
   menu_item 1 "${SB_DEFAULT}（推荐，支持 AnyTLS）"
   menu_item 2 "${SB_110}（兼容版，不支持 AnyTLS）"
@@ -1470,10 +1863,16 @@ install_flow(){
   ask '请选择 [0-2]：' choice
   case "$choice" in 1)core=$SB_DEFAULT;;2)core=$SB_110;;0|'')return 0;;*)red '无效输入。'; return 0;;esac
   tags=$(choose_protocol_tags "$core") || { yellow '安装已取消，系统未做修改。'; return 0; }
+  if [[ " $tags " == *' vless '* ]]; then
+    vless_engine=$(choose_initial_reality_engine) ||
+      { yellow '安装已取消，系统未做修改。'; return 0; }
+  fi
   for tag in $tags; do labels+="${labels:+、}$(protocol_label "$tag")"; done
   menu_header '安装摘要' '主菜单 / 安装 / 确认'
   printf '  Sing-box 内核：%s\n' "$core"
   printf '  启用协议：%s\n' "$labels"
+  [[ " $tags " == *' vless '* ]] &&
+    printf '  Reality 内核：%s\n' "$([[ "$vless_engine" == xray ]] && printf 'Xray-core %s' "$XRAY_DEFAULT" || printf 'Sing-box %s' "$core")"
   printf '  更新渠道：%s\n' "$FORK_BRANCH"
   dim '确认后才会安装依赖、下载并校验文件、生成配置和启动服务。'
   confirm_change '确认开始安装？' '协议端口将自动选择未占用端口，安装后可随时修改。' ||
@@ -1481,6 +1880,8 @@ install_flow(){
   install_packages
   install_singbox "$core"; install_rule_databases
   state=$(state_for_protocol_tags "$core" "$tags")
+  state=$(jq --arg engine "$vless_engine" '.protocols.vless.engine=$engine' <<<"$state")
+  if [[ "$vless_engine" == xray ]]; then install_xray; fi
   if ! printf '%s\n' "$state" | commit_state; then
     red '安装配置未能应用，请根据上方错误处理后重试。'
     return 0
@@ -1520,7 +1921,7 @@ update_menu(){
     menu_header '更新管理' '主菜单 / 更新管理'
     printf '  当前渠道：%s\n\n' "$FORK_BRANCH"
     menu_item 1 "从当前渠道更新（${FORK_BRANCH}）"
-    menu_item 2 '切换到稳定版 v0.0.1 并更新'
+    menu_item 2 '切换到稳定版 v0.0.2 并更新'
     menu_item 3 '切换到开发版 main 并更新'
     menu_item 4 '输入其他分支或标签'
     menu_back '返回主菜单'
@@ -1529,7 +1930,7 @@ update_menu(){
     case "$choice" in
       1) update_script && return 0 || true;;
       2)
-        set_channel v0.0.1
+        set_channel v0.0.2
         update_script && return 0 || set_channel "$previous"
         ;;
       3)
@@ -1589,6 +1990,7 @@ systemd_stop_disable(){
 stop_systemd_services(){
   command -v systemctl >/dev/null 2>&1 || return 0
   systemd_stop_disable sing-box.service || true
+  systemd_stop_disable sing-box-xray.service || true
   systemd_stop_disable sing-box-argo.service || true
 }
 uninstall(){
@@ -1598,7 +2000,9 @@ uninstall(){
   [[ "$STATE_DIR" == /etc/s-box ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
   stop_systemd_services
   rc-service sing-box stop 2>/dev/null || true
+  rc-service sing-box-xray stop 2>/dev/null || true
   rc-update del sing-box default 2>/dev/null || true
+  rc-update del sing-box-xray default 2>/dev/null || true
   ufw_remove_all_managed
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
@@ -1606,7 +2010,7 @@ uninstall(){
     "$fw" -t nat -F SBYG_HY2 2>/dev/null || true
     "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
   done
-  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-argo.service /etc/init.d/sing-box
+  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/init.d/sing-box /etc/init.d/sing-box-xray
   rm -f /usr/local/bin/sb
   systemctl daemon-reload 2>/dev/null || true
   green '卸载完成：服务、状态文件、防火墙跳跃链和 sb 快捷命令已删除。'
@@ -1652,7 +2056,11 @@ main(){
       3) require_install && { apply_current_state || true; };;
       4) require_install && update_core;;
       5) update_menu;;
-      6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;
+      6) require_install && {
+        command -v journalctl >/dev/null &&
+          journalctl -u sing-box -u sing-box-xray -n 100 --no-pager ||
+          tail -n 100 /var/log/messages
+      };;
       7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;
       8) warp;;
       9) bbr;;

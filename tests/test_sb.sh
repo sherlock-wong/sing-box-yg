@@ -4,8 +4,9 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CORE_DEFAULT=${SB_TEST_CORE_DEFAULT:-}
 CORE_110=${SB_TEST_CORE_110:-}
-[[ -x "$CORE_DEFAULT" && -x "$CORE_110" ]] || {
-  echo "set SB_TEST_CORE_DEFAULT and SB_TEST_CORE_110 to executable test cores" >&2
+XRAY_CORE=${SB_TEST_XRAY_CORE:-}
+[[ -x "$CORE_DEFAULT" && -x "$CORE_110" && -x "$XRAY_CORE" ]] || {
+  echo "set SB_TEST_CORE_DEFAULT, SB_TEST_CORE_110 and SB_TEST_XRAY_CORE to executable test cores" >&2
   exit 77
 }
 
@@ -22,13 +23,20 @@ systemd_enable_restart sing-box.service
 [[ "$systemctl_calls" == $'enable sing-box.service\nrestart sing-box.service\n' ]]
 unset -f systemctl
 
+# Core reconciliation releases old listeners before starting the selected core.
+systemctl_calls=
+systemctl(){ systemctl_calls+="${*}"$'\n'; }
+reconcile_core_services '{"protocols":{"vless":{"enabled":true,"engine":"xray"},"vmess":{"enabled":false,"engine":"sing-box"}}}'
+[[ "$systemctl_calls" == $'disable --now sing-box\ndisable --now sing-box-xray\nenable sing-box-xray\nrestart sing-box-xray\n' ]]
+unset -f systemctl
+
 # Missing/failing optional Argo state must not prevent stopping the main service or vice versa.
 saved_systemd_stop_disable=$(declare -f systemd_stop_disable)
 stopped_units=
 systemctl(){ :; }
 systemd_stop_disable(){ stopped_units+="${1}"$'\n'; [[ "$1" != sing-box.service ]]; }
 stop_systemd_services
-[[ "$stopped_units" == $'sing-box.service\nsing-box-argo.service\n' ]]
+[[ "$stopped_units" == $'sing-box.service\nsing-box-xray.service\nsing-box-argo.service\n' ]]
 eval "$saved_systemd_stop_disable"
 unset -f systemctl
 
@@ -36,6 +44,7 @@ set_case_dir(){
   STATE_DIR="$TEST_ROOT/$1"
   STATE_FILE="$STATE_DIR/protocols.json"
   CONFIG_FILE="$STATE_DIR/sb.json"
+  XRAY_CONFIG_FILE="$STATE_DIR/xray.json"
   mkdir -p "$STATE_DIR"
 }
 
@@ -60,7 +69,7 @@ saved_update_script=$(declare -f update_script)
 selected_update_channel=
 update_script(){ selected_update_channel=$FORK_BRANCH; }
 update_menu <<<"2"
-[[ "$selected_update_channel" == v0.0.1 ]]
+[[ "$selected_update_channel" == v0.0.2 ]]
 set_channel main
 update_menu <<< $'4\nfeature/next'
 [[ "$selected_update_channel" == feature/next ]]
@@ -131,6 +140,12 @@ port_available(){ return 0; }
 selected=$(select_protocols 1.13.14 <<<"1,3,4")
 eval "$saved_port_available"
 jq -e '[.protocols|to_entries[]|select(.value.enabled)|.key] == ["vless","hy2","anytls"]' <<<"$selected" >/dev/null
+[[ $(choose_initial_reality_engine <<<"1") == sing-box ]]
+[[ $(choose_initial_reality_engine <<<"2") == xray ]]
+if choose_initial_reality_engine <<<"0" >/dev/null; then
+  echo 'Reality engine selection cancellation unexpectedly succeeded' >&2
+  exit 1
+fi
 set_case_dir selection-cancel
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
 if select_protocols 1.13.14 <<<"0" >/dev/null; then
@@ -147,7 +162,7 @@ check_case legacy 1.10.7 "$CORE_110" 3 vless vmess hy2
 # Protocol menus expose live enabled state, transport, port and TLS details.
 set_case_dir four
 protocol_line=$(protocol_status_line 1 vless)
-[[ "$protocol_line" == *'Vless-Reality'*'[已启用]'*'TCP'*'25001'*'SNI www.apple.com'* ]]
+[[ "$protocol_line" == *'Vless-Reality'*'[已启用]'*'TCP'*'25001'*'Sing-box'*'SNI www.apple.com'* ]]
 protocol_line=$(protocol_status_line 4 anytls)
 [[ "$protocol_line" == *'AnyTLS'*'[已启用]'*'TCP'*'固定证书'* ]]
 
@@ -181,6 +196,12 @@ bad_port=$(jq '.protocols.hy2.port=70000' <<<"$four_state")
 ! validate_state "$bad_port"
 bad_cert_mode=$(jq '.certificates.default.mode="trusted" | .certificates.default.insecure=true' <<<"$four_state")
 ! validate_state "$bad_cert_mode"
+bad_engine=$(jq '.protocols.anytls.engine="xray"' <<<"$four_state")
+! validate_state "$bad_engine"
+bad_xray_version=$(jq '.xray_core="latest"' <<<"$four_state")
+! validate_state "$bad_xray_version"
+bad_mldsa_pair=$(jq '.protocols.vless.xray.mldsa65_seed="seed" | .protocols.vless.xray.mldsa65_verify=""' <<<"$four_state")
+! validate_state "$bad_mldsa_pair"
 
 # Schema 1 states migrate the global certificate into the library and remove TUIC completely.
 schema1_state=$(jq '
@@ -189,7 +210,8 @@ schema1_state=$(jq '
 ' <<<"$four_state")
 migrated_state=$(normalize_state <<<"$schema1_state")
 jq -e '
-  .schema==2 and (.protocols|has("tuic")|not) and
+  .schema==3 and (.protocols|has("tuic")|not) and
+  .protocols.vless.engine=="sing-box" and .xray_core=="26.3.27" and
   .protocols.vmess.certificate_id=="default" and
   .protocols.hy2.certificate_id=="default" and
   .protocols.anytls.certificate_id=="default" and
@@ -303,6 +325,12 @@ set_hy2_hop <<<"0"
 set_argo <<<"0"
 set_reality_sni <<<"0"
 rotate_reality_keys <<<"0"
+set_reality_engine <<<"0"
+set_xray_fingerprint <<<"0"
+set_xray_spider_x <<<"0"
+set_xray_time_diff <<<"0"
+set_xray_fallback_profile <<<"0"
+set_xray_mldsa65 <<<"0"
 toggle_protocol vless <<<"0"
 update_core <<<"0"
 protocol_menu <<< $'1\n5\n0\n0\n0'
@@ -360,6 +388,8 @@ scan_reality_candidates(){
 }
 set_reality_sni <<< $'1\n1'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
+[[ $(jq -r '.protocols.vless.xray.target' <<<"$captured_state") == www.cloudflare.com:443 ]]
+[[ $(jq -r '.protocols.vless.xray.server_names[0]' <<<"$captured_state") == www.cloudflare.com ]]
 validate_state "$captured_state"
 render_config "$captured_state" "$STATE_DIR/reality-candidate.json"
 "$STATE_DIR/sing-box" check -c "$STATE_DIR/reality-candidate.json"
@@ -475,6 +505,56 @@ generate_subscriptions
 [[ $(jq '.inbounds|length' "$CONFIG_FILE") -eq 1 ]]
 [[ $(wc -l < "$STATE_DIR/subscription.txt" | tr -d ' ') -eq 1 ]]
 
+# Vless-Reality can move to Xray while the remaining protocols stay on Sing-box.
+set_case_dir dual-xray
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+cp "$XRAY_CORE" "$STATE_DIR/xray"
+printf '%s\n' "$XRAY_DEFAULT" > "$STATE_DIR/xray-version"
+printf '%s\n' "$XRAY_ARM64_SHA256" > "$STATE_DIR/xray-archive.sha256"
+saved_cpu=$(declare -f cpu)
+cpu(){ echo arm64; }
+xray_install_valid
+printf 'bad\n' > "$STATE_DIR/xray-archive.sha256"
+! xray_install_valid
+printf '%s\n' "$XRAY_ARM64_SHA256" > "$STATE_DIR/xray-archive.sha256"
+eval "$saved_cpu"
+dual_state=$(make_state 1.13.14 "$CORE_DEFAULT")
+dual_state=$(enable_tags "$dual_state" vless anytls)
+dual_state=$(jq '
+  .public_address="node.example.com" |
+  .protocols.vless.engine="xray" |
+  .protocols.vless.xray.fingerprint="firefox" |
+  .protocols.vless.xray.spider_x="/generated" |
+  .protocols.vless.xray.fallback_profile="balanced"
+' <<<"$dual_state")
+printf '%s\n' "$dual_state" > "$STATE_FILE"
+validate_state "$dual_state"
+render_config "$dual_state" "$CONFIG_FILE"
+render_xray_config "$dual_state" "$XRAY_CONFIG_FILE"
+"$STATE_DIR/sing-box" check -c "$CONFIG_FILE"
+"$STATE_DIR/xray" run -test -c "$XRAY_CONFIG_FILE"
+[[ $(jq '.inbounds|length' "$CONFIG_FILE") -eq 1 ]]
+[[ $(jq -r '.inbounds[0].tag' "$CONFIG_FILE") == anytls-sb ]]
+[[ $(jq '.inbounds|length' "$XRAY_CONFIG_FILE") -eq 1 ]]
+[[ $(jq -r '.inbounds[0].tag' "$XRAY_CONFIG_FILE") == vless-xray ]]
+[[ $(jq -r '.inbounds[0].streamSettings.realitySettings.limitFallbackUpload.bytesPerSec' "$XRAY_CONFIG_FILE") -eq 1048576 ]]
+generate_subscriptions
+dual_vless_link=$(grep '^vless://' "$STATE_DIR/subscription.txt")
+[[ "$dual_vless_link" == *'fp=firefox'*'spx=%2Fgenerated'* ]]
+"$STATE_DIR/sing-box" check -c "$STATE_DIR/sing-box-client.json"
+
+# ML-DSA-65 values are generated by Xray and never typed by the user.
+saved_apply_state=$(declare -f apply_state)
+saved_xray_mldsa_target_compatible=$(declare -f xray_mldsa_target_compatible)
+captured_state=
+apply_state(){ captured_state=$1; }
+xray_mldsa_target_compatible(){ return 0; }
+set_xray_mldsa65 <<<"1"
+[[ $(jq -r '.protocols.vless.xray.mldsa65_seed|length>20' <<<"$captured_state") == true ]]
+[[ $(jq -r '.protocols.vless.xray.mldsa65_verify|length>100' <<<"$captured_state") == true ]]
+eval "$saved_apply_state"
+eval "$saved_xray_mldsa_target_compatible"
+
 # A failed restart restores both state and server config.
 set_case_dir rollback
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
@@ -483,9 +563,11 @@ old=$(enable_tags "$old" vless)
 old=$(jq '.public_address="old.example.com"' <<<"$old")
 printf '%s\n' "$old" > "$STATE_FILE"
 render_config "$old" "$CONFIG_FILE"
+render_xray_config "$old" "$XRAY_CONFIG_FILE"
 cp "$CONFIG_FILE" "$STATE_DIR/original.json"
-write_service(){ :; }
-restart_service(){ return 1; }
+cp "$XRAY_CONFIG_FILE" "$STATE_DIR/original-xray.json"
+write_services(){ :; }
+reconcile_core_services(){ return 1; }
 generate_subscriptions(){ :; }
 reconcile_hy2_hop(){ :; }
 reconcile_argo(){ :; }
@@ -493,5 +575,6 @@ candidate=$(jq '.public_address="new.example.com"' <<<"$old")
 ! commit_state <<<"$candidate"
 [[ $(jq -r '.public_address' "$STATE_FILE") == old.example.com ]]
 cmp "$CONFIG_FILE" "$STATE_DIR/original.json"
+cmp "$XRAY_CONFIG_FILE" "$STATE_DIR/original-xray.json"
 
 echo "all selectable-protocol tests passed"
