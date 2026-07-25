@@ -6,17 +6,19 @@
 
 使用受支持的 Debian、Ubuntu、RHEL 系或 Alpine 系统，并以 `root` 运行。VPS 控制台防火墙/安全组应放行实际启用协议的 TCP/UDP 端口；Reality、Vmess、AnyTLS 使用 TCP，Hysteria2 使用 UDP。服务一直监听 `::`；分享链接的对外地址是独立设置。
 
-正式 fork 安装命令：
+推荐安装第一个稳定版 `v0.0.1`：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
+SBYG_CHANNEL=v0.0.1 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.1/sb.sh)
 ```
 
-测试本功能分支：
+`main` 用于继续开发和测试最新改动：
 
 ```bash
-SBYG_CHANNEL=feature/selectable-protocols bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/feature/selectable-protocols/sb.sh)
+SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
 ```
+
+`SBYG_CHANNEL` 会让安装过程中需要的校验文件和 fork 内辅助文件继续从同一个标签或分支下载。稳定版安装后可直接运行 `sb`；当前版本如果在主菜单选择 `5 更新脚本`，默认更新目标仍是 `main`。需要继续固定在 `v0.0.1` 时，使用 `SBYG_CHANNEL=v0.0.1 sb` 进入菜单后再选择更新。后续版本将把安装来源写入状态文件，并在更新前显示目标渠道。
 
 安装时输入协议编号的逗号分隔列表。例如 `1,3,4` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 `1.10.7` 时不显示 AnyTLS，输入 `4` 会被拒绝。VPS fork 已移除 TUIC v5。
 
