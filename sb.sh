@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.2'
+SCRIPT_VERSION='v26.7.25-fork.3'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 FORK_BRANCH="${SBYG_CHANNEL:-main}"
@@ -296,25 +296,120 @@ validate_state(){
   [[ $(jq '[.protocols[] | select(.enabled) | .port] | unique | length' <<<"$s") == $(jq '[.protocols[] | select(.enabled)] | length' <<<"$s") ]]
 }
 
+ufw_active(){
+  command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'
+}
+ufw_desired_rules(){ # state -> tag<TAB>port/protocol
+  local s=$1 tag port hop
+  for tag in vless vmess hy2 tuic anytls; do
+    jq -e --arg t "$tag" '.protocols[$t].enabled' <<<"$s" >/dev/null || continue
+    port=$(jq -r --arg t "$tag" '.protocols[$t].port' <<<"$s")
+    case "$tag" in vless|vmess|anytls) printf '%s\t%s/tcp\n' "$tag" "$port";;hy2|tuic) printf '%s\t%s/udp\n' "$tag" "$port";;esac
+  done
+  if jq -e '.protocols.hy2.enabled and ((.protocols.hy2.udp_hop|length)>0)' <<<"$s" >/dev/null; then
+    hop=$(jq -r '.protocols.hy2.udp_hop' <<<"$s")
+    printf 'hy2-hop\t%s/udp\n' "$hop"
+  fi
+}
+ufw_rule_desired(){ # state tag spec
+  local s=$1 wanted_tag=$2 wanted_spec=$3 tag spec
+  while IFS=$'\t' read -r tag spec; do
+    [[ "$tag" == "$wanted_tag" && "$spec" == "$wanted_spec" ]] && return 0
+  done < <(ufw_desired_rules "$s")
+  return 1
+}
+ufw_allow_exists(){ # spec [managed-tag]
+  local spec=$1 tag=${2:-}
+  ufw status 2>/dev/null | awk -v spec="$spec" -v marker="${tag:+# sing-box-yg:$tag}" '
+    $1==spec && $2=="ALLOW" && (marker=="" || index($0,marker)>0) { found=1 }
+    END { exit !found }
+  '
+}
+ufw_add_rule(){ # tag spec
+  local tag=$1 spec=$2
+  ufw_allow_exists "$spec" "$tag" && return 0
+  # Respect an existing administrator-owned allow rule and never claim or later delete it.
+  ufw_allow_exists "$spec" && return 0
+  ufw allow "$spec" comment "sing-box-yg:$tag" >/dev/null
+}
+ufw_delete_rule(){ # tag spec; only rules carrying our marker are removable
+  local tag=$1 spec=$2
+  ufw_allow_exists "$spec" "$tag" || return 0
+  ufw --force delete allow "$spec" comment "sing-box-yg:$tag" >/dev/null
+}
+ufw_prepare_candidate(){ # candidate transaction-file
+  local candidate=$1 transaction=$2 tag spec
+  ufw_active || return 0
+  : > "$transaction"
+  while IFS=$'\t' read -r tag spec; do
+    if ufw_allow_exists "$spec" "$tag" || ufw_allow_exists "$spec"; then
+      continue
+    fi
+    if ! ufw_add_rule "$tag" "$spec"; then
+      red "UFW 无法放行新端口：$spec；原配置未改变。"
+      ufw_rollback_candidate "$transaction"
+      return 1
+    fi
+    printf '%s\t%s\n' "$tag" "$spec" >> "$transaction"
+  done < <(ufw_desired_rules "$candidate")
+}
+ufw_rollback_candidate(){ # transaction-file
+  local transaction=$1 tag spec
+  ufw_active || return 0
+  [[ -f "$transaction" ]] || return 0
+  while IFS=$'\t' read -r tag spec; do
+    ufw_delete_rule "$tag" "$spec" || true
+  done < "$transaction"
+}
+ufw_finalize_candidate(){ # old-state-file candidate
+  local old_file=$1 candidate=$2 old tag spec
+  ufw_active || return 0
+  [[ -s "$old_file" ]] || return 0
+  old=$(cat "$old_file")
+  while IFS=$'\t' read -r tag spec; do
+    ufw_rule_desired "$candidate" "$tag" "$spec" && continue
+    ufw_delete_rule "$tag" "$spec" || {
+      yellow "UFW 旧规则未能删除：$spec（服务已使用新配置，请手动检查 ufw status）。"
+    }
+  done < <(ufw_desired_rules "$old")
+}
+ufw_remove_all_managed(){
+  local number
+  ufw_active || return 0
+  while :; do
+    number=$(ufw status numbered 2>/dev/null | awk '/# sing-box-yg:/{
+      line=$0
+      sub(/^[^[]*\[[[:space:]]*/, "", line)
+      sub(/\].*$/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      n=line
+    } END{print n}')
+    [[ "$number" =~ ^[0-9]+$ ]] || break
+    ufw --force delete "$number" >/dev/null || break
+  done
+}
+
 commit_state(){ # candidate JSON stdin
-  local candidate tmp state_tmp config_tmp old_state old_config
+  local candidate tmp state_tmp config_tmp old_state old_config ufw_transaction
   candidate=$(jq '.certificate.mode //= (if .certificate.insecure then "pinned" else "trusted" end) |
     .certificate.insecure = (.certificate.mode == "pinned")' <<<"$(cat)") ||
     { red '状态 JSON 无效，原配置未改变。'; return 1; }
   validate_state "$candidate" || { red '状态无效：检查协议数量、输入类型、UUID、Path、证书模式与端口。'; return 1; }
-  tmp=$(tmpdir); state_tmp="$tmp/protocols.json"; config_tmp="$tmp/sb.json"; old_state="$tmp/old-state.json"; old_config="$tmp/old-config.json"
+  tmp=$(tmpdir); state_tmp="$tmp/protocols.json"; config_tmp="$tmp/sb.json"; old_state="$tmp/old-state.json"; old_config="$tmp/old-config.json"; ufw_transaction="$tmp/ufw-added.tsv"
   printf '%s\n' "$candidate" > "$state_tmp"
   render_config "$candidate" "$config_tmp" || { red 'JSON 渲染失败，原配置未改变。'; return 1; }
   "$STATE_DIR/sing-box" check -c "$config_tmp" || { red 'sing-box check 失败，原配置未改变。'; return 1; }
   install -d -m 755 "$STATE_DIR"
   [[ -f "$STATE_FILE" ]] && cp "$STATE_FILE" "$old_state"
   [[ -f "$CONFIG_FILE" ]] && cp "$CONFIG_FILE" "$old_config"
+  ufw_prepare_candidate "$candidate" "$ufw_transaction" || return 1
   chmod 600 "$state_tmp" "$config_tmp"
   mv "$state_tmp" "$STATE_FILE"; mv "$config_tmp" "$CONFIG_FILE"
   if ! write_service || ! restart_service; then
     red '重启失败，正在回滚原配置。'
     if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
     if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    ufw_rollback_candidate "$ufw_transaction"
     restart_service || true
     return 1
   fi
@@ -322,9 +417,11 @@ commit_state(){ # candidate JSON stdin
     red '订阅安全参数生成失败，正在回滚原配置。'
     if [[ -f "$old_state" ]]; then cp "$old_state" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
     if [[ -f "$old_config" ]]; then cp "$old_config" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    ufw_rollback_candidate "$ufw_transaction"
     restart_service || true
     return 1
   fi
+  ufw_finalize_candidate "$old_state" "$candidate"
   reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
   green '配置已通过 JSON 与 sing-box check；已原子替换并重启。'
@@ -937,18 +1034,25 @@ install_flow(){
   if ! state=$(select_protocols "$core"); then yellow '安装已取消，尚未写入协议状态或启动服务。'; return 0; fi
   printf '%s\n' "$state" | commit_state
   printf '%s\n' "$core" > "$STATE_DIR/core-version"
-  update_script
+  update_script no-reload
   green '安装完成。可通过 sb → 配置菜单随时增删协议。'
   offer_tls_certificate_setup
 }
 
 update_script(){
-  local expected
+  local reload=${1:-reload} expected
   WORKDIR=$(tmpdir)
   expected=$(curl -fsSL --proto '=https' --tlsv1.2 "$FORK_RAW/sb.sh.sha256" | awk '{print $1}')
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die 'fork 快捷脚本校验文件无效，拒绝更新。'
   download_verified "$FORK_RAW/sb.sh" "$expected" "$WORKDIR/sb.sh" 'fork 快捷脚本'
   install -m 755 "$WORKDIR/sb.sh" /usr/local/bin/sb
+  green '脚本更新完成。'
+  if [[ "$reload" == reload ]]; then
+    green '正在切换到新脚本进程...'
+    trap - EXIT
+    cleanup_tmp
+    exec /usr/local/bin/sb
+  fi
 }
 check_version(){
   local latest
@@ -995,6 +1099,7 @@ uninstall(){
   stop_systemd_services
   rc-service sing-box stop 2>/dev/null || true
   rc-update del sing-box default 2>/dev/null || true
+  ufw_remove_all_managed
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
     while "$fw" -t nat -C PREROUTING -j SBYG_HY2 2>/dev/null; do "$fw" -t nat -D PREROUTING -j SBYG_HY2 || break; done

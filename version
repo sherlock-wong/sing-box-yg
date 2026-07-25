@@ -1,3 +1,7 @@
+v26.7.25-fork.3 更新内容：
+
+VPS fork：更新脚本后立即切换新进程；UFW active 时事务式同步协议端口和 Hy2 跳跃范围。
+
 v26.7.25-fork.2 更新内容：
 
 VPS fork：AnyTLS 优先使用系统 CA 受信证书；自签证书改用 Xray/v2rayN 证书固定和 Sing-box 公钥固定，不再仅导出 allowInsecure。

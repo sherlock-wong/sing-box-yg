@@ -146,6 +146,70 @@ valid_host node.example.com
 ! valid_host 999.1.1.1
 ! valid_host 'bad host!'
 
+# Active UFW changes are transactional: open candidate ports first, then remove only owned old rules.
+old_fw_state=$(jq '
+  .protocols.vmess.enabled=false | .protocols.tuic.enabled=false |
+  .protocols.hy2.udp_hop=""
+' <<<"$five_state")
+old_vless_port=$(jq -r '.protocols.vless.port' <<<"$old_fw_state")
+old_anytls_port=$(jq -r '.protocols.anytls.port' <<<"$old_fw_state")
+new_fw_state=$(jq '
+  .protocols.vless.port=31000 |
+  .protocols.anytls.enabled=false |
+  .protocols.hy2.udp_hop="32000:32010"
+' <<<"$old_fw_state")
+mock_ufw_rules=$(ufw_desired_rules "$old_fw_state")
+mock_ufw_added=
+mock_ufw_deleted=
+saved_ufw_active=$(declare -f ufw_active)
+saved_ufw_allow_exists=$(declare -f ufw_allow_exists)
+saved_ufw_add_rule=$(declare -f ufw_add_rule)
+saved_ufw_delete_rule=$(declare -f ufw_delete_rule)
+ufw_active(){ return 0; }
+ufw_allow_exists(){
+  local wanted_spec=$1 wanted_tag=${2:-} tag spec
+  while IFS=$'\t' read -r tag spec; do
+    [[ "$spec" == "$wanted_spec" && ( -z "$wanted_tag" || "$tag" == "$wanted_tag" ) ]] && return 0
+  done <<<"$mock_ufw_rules"
+  return 1
+}
+ufw_add_rule(){
+  mock_ufw_added+="${1}"$'\t'"${2}"$'\n'
+  mock_ufw_rules+=$'\n'"${1}"$'\t'"${2}"
+}
+ufw_delete_rule(){ mock_ufw_deleted+="${1}"$'\t'"${2}"$'\n'; }
+ufw_transaction="$TEST_ROOT/ufw-transaction.tsv"
+ufw_prepare_candidate "$new_fw_state" "$ufw_transaction"
+[[ "$mock_ufw_added" == *$'vless\t31000/tcp\n'* ]]
+[[ "$mock_ufw_added" == *$'hy2-hop\t32000:32010/udp\n'* ]]
+[[ "$mock_ufw_added" != *$'hy2\t'* ]]
+printf '%s\n' "$old_fw_state" > "$TEST_ROOT/old-ufw-state.json"
+ufw_finalize_candidate "$TEST_ROOT/old-ufw-state.json" "$new_fw_state"
+[[ "$mock_ufw_deleted" == *$'vless\t'"${old_vless_port}"$'/tcp\n'* ]]
+[[ "$mock_ufw_deleted" == *$'anytls\t'"${old_anytls_port}"$'/tcp\n'* ]]
+mock_ufw_deleted=
+ufw_rollback_candidate "$ufw_transaction"
+[[ "$mock_ufw_deleted" == *$'vless\t31000/tcp\n'* ]]
+[[ "$mock_ufw_deleted" == *$'hy2-hop\t32000:32010/udp\n'* ]]
+mock_ufw_numbered_count=2
+mock_ufw_number_deletes=
+ufw(){
+  if [[ "$1" == status && "${2:-}" == numbered ]]; then
+    if ((mock_ufw_numbered_count >= 1)); then printf '[ 1] 25001/tcp ALLOW IN Anywhere # sing-box-yg:vless\n'; fi
+    if ((mock_ufw_numbered_count >= 2)); then printf '[12] 25005/tcp ALLOW IN Anywhere # sing-box-yg:anytls\n'; fi
+  elif [[ "$1" == --force && "$2" == delete ]]; then
+    mock_ufw_number_deletes+="${3}"$'\n'
+    mock_ufw_numbered_count=$((mock_ufw_numbered_count - 1))
+  fi
+}
+ufw_remove_all_managed
+[[ "$mock_ufw_number_deletes" == $'12\n1\n' ]]
+unset -f ufw
+eval "$saved_ufw_active"
+eval "$saved_ufw_allow_exists"
+eval "$saved_ufw_add_rule"
+eval "$saved_ufw_delete_rule"
+
 # Every edit prompt can return without producing a candidate.
 set_case_dir cancel
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
