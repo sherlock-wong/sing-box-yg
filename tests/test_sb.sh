@@ -228,6 +228,8 @@ set_address <<<"0"
 set_certificate <<<"0"
 set_tls_domain anytls <<<"0"
 certificate_menu <<<"0"
+domain_certificate_wizard anytls <<<"0"
+domain_certificate_target_menu <<<"0"
 set_hy2_hop <<<"0"
 set_argo <<<"0"
 set_reality_sni <<<"0"
@@ -277,6 +279,37 @@ render_config "$captured_state" "$STATE_DIR/reality-candidate.json"
 eval "$saved_apply_state"
 eval "$saved_scan_reality_candidates"
 
+# The domain-certificate wizard reuses a matching certificate or validates ACME output before binding.
+saved_find_domain_certificate=$(declare -f find_domain_certificate)
+saved_bind_trusted_domain_certificate=$(declare -f bind_trusted_domain_certificate)
+saved_acme=$(declare -f acme)
+wizard_bind=
+wizard_acme_calls=0
+find_domain_certificate(){
+  FOUND_CERT=/tmp/existing-cert.crt
+  FOUND_KEY=/tmp/existing-private.key
+  return 0
+}
+bind_trusted_domain_certificate(){ wizard_bind="${1}"$'\t'"${2}"$'\t'"${3}"$'\t'"${4}"; }
+domain_certificate_wizard anytls <<<"tls.example.com"
+[[ "$wizard_bind" == $'anytls\ttls.example.com\t/tmp/existing-cert.crt\t/tmp/existing-private.key' ]]
+wizard_bind=
+find_domain_certificate(){
+  if [[ "${2:-false}" == true && $wizard_acme_calls -eq 1 ]]; then
+    FOUND_CERT=/root/ygkkkca/cert.crt
+    FOUND_KEY=/root/ygkkkca/private.key
+    return 0
+  fi
+  return 1
+}
+acme(){ wizard_acme_calls=$((wizard_acme_calls + 1)); }
+domain_certificate_wizard anytls <<< $'tls.example.com\n1'
+[[ $wizard_acme_calls -eq 1 ]]
+[[ "$wizard_bind" == $'anytls\ttls.example.com\t/root/ygkkkca/cert.crt\t/root/ygkkkca/private.key' ]]
+eval "$saved_find_domain_certificate"
+eval "$saved_bind_trusted_domain_certificate"
+eval "$saved_acme"
+
 # A trusted certificate setting propagates to share links and must cover enabled TLS protocol domains.
 set_case_dir certificate
 cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
@@ -301,6 +334,24 @@ jq -e '[.proxies[] | select(.type=="hysteria2" or .type=="tuic" or .type=="anytl
 bad_cert_state=$(jq '.protocols.anytls.domain="other.example.com"' <<<"$cert_state")
 printf '%s\n' "$bad_cert_state" > "$STATE_FILE"
 ! certificate_covers_enabled_domains "$(jq -r '.certificate.cert' "$STATE_FILE")"
+
+# Binding a validated domain certificate passes one atomic candidate to commit_state.
+single_tls_state=$(jq '
+  .protocols.vless.enabled=false | .protocols.vmess.enabled=false |
+  .protocols.hy2.enabled=false | .protocols.tuic.enabled=false |
+  .protocols.anytls.enabled=true | .protocols.anytls.domain="www.bing.com" |
+  .certificate.mode="pinned" | .certificate.insecure=true
+' <<<"$cert_state")
+printf '%s\n' "$single_tls_state" > "$STATE_FILE"
+saved_commit_state=$(declare -f commit_state)
+bound_candidate_file="$STATE_DIR/bound-candidate.json"
+commit_state(){ cat > "$bound_candidate_file"; }
+bind_trusted_domain_certificate anytls tls.example.com "$STATE_DIR/trusted.pem" "$STATE_DIR/trusted.key"
+jq -e --arg cert "$STATE_DIR/trusted.pem" --arg key "$STATE_DIR/trusted.key" '
+  .protocols.anytls.domain == "tls.example.com" and
+  .certificate == {cert:$cert,key:$key,mode:"trusted",insecure:false}
+' "$bound_candidate_file" >/dev/null
+eval "$saved_commit_state"
 eval "$saved_certificate_matches_domain"
 
 # Subscription/config output follows runtime disable.

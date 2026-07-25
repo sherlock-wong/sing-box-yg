@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.3'
+SCRIPT_VERSION='v26.7.25-fork.4'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 FORK_BRANCH="${SBYG_CHANNEL:-main}"
@@ -766,13 +766,23 @@ set_reality_sni(){
   esac
 }
 certificate_matches_domain(){ openssl x509 -in "$1" -noout -checkhost "$2" >/dev/null 2>&1; }
+certificate_pair_valid(){
+  local cert=$1 key=$2 cert_pub key_pub
+  [[ -r "$cert" && -r "$key" ]] || return 1
+  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || return 1
+  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 || return 1
+  cert_pub=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
+  key_pub=$(openssl pkey -in "$key" -pubout -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
+  [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]]
+}
 certificate_covers_enabled_domains(){
-  local cert=$1 tag domain enabled
+  local cert=$1 state=${2:-} tag domain enabled
+  [[ -n "$state" ]] || state=$(cat "$STATE_FILE")
   for tag in vmess hy2 tuic anytls; do
-    enabled=$(jq -r --arg t "$tag" '.protocols[$t].enabled' "$STATE_FILE")
-    [[ "$tag" != vmess || $(jq -r '.protocols.vmess.tls' "$STATE_FILE") == true ]] || continue
+    enabled=$(jq -r --arg t "$tag" '.protocols[$t].enabled' <<<"$state")
+    [[ "$tag" != vmess || $(jq -r '.protocols.vmess.tls' <<<"$state") == true ]] || continue
     [[ "$enabled" == true ]] || continue
-    domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")
+    domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' <<<"$state")
     certificate_matches_domain "$cert" "$domain" || {
       red "证书不覆盖已启用的 $(protocol_label "$tag") 域名：${domain}"
       return 1
@@ -780,16 +790,12 @@ certificate_covers_enabled_domains(){
   done
 }
 set_certificate(){
-  local cert key cert_pub key_pub choice mode insecure candidate
+  local cert key choice mode insecure candidate
   ask '证书完整路径（回车/0 返回上一级）：' cert
   cancel_input "$cert" && return 0
   ask '私钥完整路径（回车/0 返回上一级）：' key
   cancel_input "$key" && return 0
-  [[ -r "$cert" && -r "$key" ]] || { red '证书或私钥不可读。'; return 0; }
-  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || { red '证书格式无效。'; return 0; }
-  cert_pub=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
-  key_pub=$(openssl pkey -in "$key" -pubout -outform pem 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}') || true
-  [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] || { red '证书和私钥不匹配。'; return 0; }
+  certificate_pair_valid "$cert" "$key" || { red '证书/私钥不可读、格式无效或公私钥不匹配。'; return 0; }
   echo '客户端证书校验：1 自签证书固定 SHA256  2 系统 CA 验证（ACME/受信证书，推荐）  0 返回上一级'
   ask '选择：' choice
   cancel_input "$choice" && return 0
@@ -810,6 +816,109 @@ set_certificate(){
   candidate=$(jq --arg cert "$cert" --arg key "$key" --arg mode "$mode" --argjson insecure "$insecure" \
     '.certificate.cert=$cert | .certificate.key=$key | .certificate.mode=$mode | .certificate.insecure=$insecure' "$STATE_FILE")
   apply_state "$candidate"
+}
+find_domain_certificate(){ # domain [acme-only]; sets FOUND_CERT and FOUND_KEY
+  local domain=$1 acme_only=${2:-false} cert key mode
+  FOUND_CERT=; FOUND_KEY=
+  if [[ "$acme_only" != true ]]; then
+    mode=$(certificate_mode "$STATE_FILE")
+    if [[ "$mode" == trusted ]]; then
+      cert=$(jq -r '.certificate.cert' "$STATE_FILE"); key=$(jq -r '.certificate.key' "$STATE_FILE")
+      if certificate_pair_valid "$cert" "$key" && certificate_matches_domain "$cert" "$domain"; then
+        FOUND_CERT=$cert; FOUND_KEY=$key; return 0
+      fi
+    fi
+  fi
+  cert=/root/ygkkkca/cert.crt; key=/root/ygkkkca/private.key
+  if certificate_pair_valid "$cert" "$key" && certificate_matches_domain "$cert" "$domain"; then
+    FOUND_CERT=$cert; FOUND_KEY=$key; return 0
+  fi
+  return 1
+}
+prompt_domain_certificate(){ # domain; sets FOUND_CERT and FOUND_KEY
+  local domain=$1 cert key
+  ask '已有证书完整路径（回车/0 返回上一级）：' cert
+  cancel_input "$cert" && return 1
+  ask '已有私钥完整路径（回车/0 返回上一级）：' key
+  cancel_input "$key" && return 1
+  certificate_pair_valid "$cert" "$key" || { red '证书/私钥不可读、格式无效或公私钥不匹配。'; return 1; }
+  certificate_matches_domain "$cert" "$domain" || { red "证书 SAN 不覆盖域名：$domain"; return 1; }
+  FOUND_CERT=$cert; FOUND_KEY=$key
+}
+bind_trusted_domain_certificate(){ # tag domain cert key
+  local tag=$1 domain=$2 cert=$3 key=$4 candidate choice
+  if [[ "$tag" == all ]]; then
+    candidate=$(jq --arg d "$domain" '
+      .protocols.vmess.domain=$d | .protocols.hy2.domain=$d |
+      .protocols.tuic.domain=$d | .protocols.anytls.domain=$d
+    ' "$STATE_FILE")
+  else
+    candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
+  fi
+  candidate=$(jq --arg cert "$cert" --arg key "$key" '
+    .certificate.cert=$cert | .certificate.key=$key |
+    .certificate.mode="trusted" | .certificate.insecure=false
+  ' <<<"$candidate")
+  if ! certificate_covers_enabled_domains "$cert" "$candidate"; then
+    echo '该证书是全局共享的，其他已启用普通 TLS 协议仍使用不同域名。'
+    echo "1 将 Vmess/Hy2/TUIC/AnyTLS 证书域名统一为 ${domain}  0 返回上一级"
+    ask '选择：' choice
+    [[ "$choice" == 1 ]] || { yellow '未绑定证书，原配置保持不变。'; return 1; }
+    candidate=$(jq --arg d "$domain" '
+      .protocols.vmess.domain=$d | .protocols.hy2.domain=$d |
+      .protocols.tuic.domain=$d | .protocols.anytls.domain=$d
+    ' <<<"$candidate")
+    certificate_covers_enabled_domains "$cert" "$candidate" || {
+      red '证书仍不能覆盖启用协议，原配置保持不变。'
+      return 1
+    }
+  fi
+  if printf '%s\n' "$candidate" | commit_state; then
+    green "域名证书已绑定并应用：${domain}"
+    green '请在客户端重新导入最新订阅/分享链接。'
+    return 0
+  fi
+  red '证书绑定失败，已保留原自签证书和协议配置。'
+  return 1
+}
+domain_certificate_wizard(){ # target tag
+  local tag=$1 domain choice
+  ask '准备使用的证书域名（Cloudflare 请保持灰云；回车/0 返回上一级）：' domain
+  cancel_input "$domain" && return 0
+  valid_host "$domain" && [[ "$domain" != *:* && ! "$domain" =~ ^[0-9.]+$ ]] ||
+    { red '必须填写有效域名。'; return 0; }
+  if find_domain_certificate "$domain"; then
+    green "检测到覆盖 ${domain} 且公私钥匹配的现有证书：$FOUND_CERT"
+  else
+    yellow "没有检测到覆盖 ${domain} 的可用域名证书。"
+    echo '1 运行锁定版 ACME 申请  2 手动指定已有证书  0 返回上一级'
+    ask '选择：' choice
+    case "$choice" in
+      1)
+        if ! acme; then yellow 'ACME 脚本未正常完成，正在检查是否生成了有效证书。'; fi
+        find_domain_certificate "$domain" true || {
+          red "ACME 后仍未发现覆盖 ${domain} 的证书。"
+          yellow '预期路径：/root/ygkkkca/cert.crt 和 /root/ygkkkca/private.key；原配置未改变。'
+          return 0
+        }
+        green "ACME 证书验证成功：$FOUND_CERT"
+        ;;
+      2) prompt_domain_certificate "$domain" || return 0;;
+      0|'') return 0;;
+      *) red '无效输入。'; return 0;;
+    esac
+  fi
+  bind_trusted_domain_certificate "$tag" "$domain" "$FOUND_CERT" "$FOUND_KEY" || true
+}
+domain_certificate_target_menu(){
+  local choice tag
+  echo '域名证书应用到：1 Vmess-WS  2 Hysteria2  3 TUIC v5  4 AnyTLS  5 全部统一  0 返回上一级'
+  ask '选择：' choice
+  case "$choice" in
+    1)tag=vmess;;2)tag=hy2;;3)tag=tuic;;4)tag=anytls;;5)tag=all;;0|'')return 0;;
+    *)red '无效输入。'; return 0;;
+  esac
+  domain_certificate_wizard "$tag"
 }
 show_certificate(){
   local cert mode der_pin spki_pin
@@ -866,11 +975,11 @@ tls_domain_menu(){
 certificate_menu(){
   local choice
   while :; do
-    echo '证书管理：1 查看证书/模式/固定值  2 导入证书/私钥  3 配置协议证书域名  4 运行 ACME 签发脚本  0 返回上一级'
+    echo '证书管理：1 查看证书/模式/固定值  2 手动导入证书/私钥  3 仅修改协议证书域名  4 域名证书向导（检测/ACME/自动绑定）  0 返回上一级'
     ask '选择：' choice
     case "$choice" in
       1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
-      4)acme; yellow 'ACME 完成后，请导入证书/私钥并选择“系统 CA 验证（推荐）”；Cloudflare 上的 AnyTLS 记录保持灰云。';;
+      4)domain_certificate_target_menu;;
       0|'')return 0;;*)red '无效输入。';;
     esac
   done
@@ -971,10 +1080,10 @@ specialty_menu(){
         case "$choice" in 1)set_tls_domain hy2;;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       tuic|anytls)
-        echo '专项参数：1 证书域名  0 返回上一级'
+        echo '专项参数：1 仅修改证书域名  2 域名证书向导（检测/ACME/自动绑定）  0 返回上一级'
         echo '普通 TLS 的 SNI 应匹配实际证书域名，不使用 Reality 的伪装候选。'
         ask '选择：' choice
-        case "$choice" in 1)set_tls_domain "$tag";;0|'')return 0;;*)red '无效输入。';;esac
+        case "$choice" in 1)set_tls_domain "$tag";;2)domain_certificate_wizard "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
   done
@@ -1116,8 +1225,8 @@ uninstall(){
 main(){
   need_root; if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
   check_version
-  while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 Acme  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
-    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) acme;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) if uninstall; then exit 0; fi;;0) exit 0;;*) red '无效输入。';;esac
+  while :; do echo; echo "sing-box-yg ${SCRIPT_VERSION}（VPS fork）"; echo '1 安装  2 配置/节点/订阅  3 应用配置/重启  4 更新内核  5 更新脚本  6 日志  7 域名证书/ACME  8 WARP  9 BBR  10 WARP-plus  11 卸载  0 退出'; ask '选择：' m
+    case "$m" in 1) [[ -f "$STATE_FILE" ]] && red '已安装；请使用配置菜单。' || install_flow;;2) require_install && configure_menu;;3) require_install && { apply_current_state || true; };;4) require_install && update_core;;5) update_script;;6) require_install && { command -v journalctl >/dev/null && journalctl -u sing-box -n 100 --no-pager || tail -n 100 /var/log/messages; };;7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;8) warp;;9) bbr;;10) require_install && install_sbwpph;;11) if uninstall; then exit 0; fi;;0) exit 0;;*) red '无效输入。';;esac
   done
 }
 [[ "${SBYG_LIB_ONLY:-0}" == 1 ]] || main "$@"
