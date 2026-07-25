@@ -15,6 +15,13 @@ export SBYG_STATE_DIR="$TEST_ROOT/initial"
 source "$ROOT/sb.sh"
 trap 'cleanup_tmp; rm -rf "$TEST_ROOT"' EXIT
 
+# Existing systemd services must always restart after a validated config replacement.
+systemctl_calls=
+systemctl(){ systemctl_calls+="${*}"$'\n'; }
+systemd_enable_restart sing-box.service
+[[ "$systemctl_calls" == $'enable sing-box.service\nrestart sing-box.service\n' ]]
+unset -f systemctl
+
 set_case_dir(){
   STATE_DIR="$TEST_ROOT/$1"
   STATE_FILE="$STATE_DIR/protocols.json"

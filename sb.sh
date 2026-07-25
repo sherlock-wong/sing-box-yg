@@ -170,8 +170,16 @@ EOF
     return 1
   fi
 }
+systemd_enable_restart(){
+  systemctl enable "$1" >/dev/null 2>&1 || return 1
+  systemctl restart "$1"
+}
 restart_service(){
-  if command -v systemctl >/dev/null; then systemctl enable --now "$SERVICE_NAME" >/dev/null 2>&1 || systemctl restart "$SERVICE_NAME"; else rc-service sing-box restart; fi
+  if command -v systemctl >/dev/null; then
+    systemd_enable_restart "$SERVICE_NAME"
+  else
+    rc-service sing-box restart
+  fi
 }
 
 new_state(){
@@ -414,7 +422,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now sing-box-argo.service >/dev/null 2>&1 || systemctl restart sing-box-argo.service
+  systemd_enable_restart sing-box-argo.service
 }
 
 set_address(){
