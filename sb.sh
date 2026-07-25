@@ -511,6 +511,7 @@ check_version(){
   local latest
   latest=$(curl -fsSL --max-time 3 "$FORK_RAW/version" 2>/dev/null | head -n1 || true)
   [[ -n "$latest" && "$latest" != "$SCRIPT_VERSION"* ]] && yellow "fork main 可用版本：$latest（当前 $SCRIPT_VERSION）"
+  return 0
 }
 update_core(){
   local v candidate tmp cfg
