@@ -851,12 +851,31 @@ update_core(){
   cp "$STATE_DIR/sing-box" "$STATE_DIR/sing-box.old"; mv "$STATE_DIR/sing-box.new" "$STATE_DIR/sing-box"
   if printf '%s\n' "$candidate" | commit_state; then printf '%s\n' "$v" > "$STATE_DIR/core-version"; rm -f "$STATE_DIR/sing-box.old"; else mv "$STATE_DIR/sing-box.old" "$STATE_DIR/sing-box"; restart_service || true; fi
 }
+systemd_stop_disable(){
+  local unit=$1 pid i
+  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
+  systemctl stop "$unit" 2>/dev/null || true
+  systemctl disable "$unit" 2>/dev/null || true
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  for ((i=0; i<20; i++)); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+stop_systemd_services(){
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemd_stop_disable sing-box.service || true
+  systemd_stop_disable sing-box-argo.service || true
+}
 uninstall(){
   local x fw
   read -r -p '确认卸载 VPS Sing-box（输入 YES；回车/0 返回上一级）：' x
   [[ $x == YES ]] || return 1
   [[ "$STATE_DIR" == /etc/s-box ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
-  systemctl disable --now sing-box sing-box-argo 2>/dev/null || true
+  stop_systemd_services
   rc-service sing-box stop 2>/dev/null || true
   rc-update del sing-box default 2>/dev/null || true
   for fw in iptables ip6tables; do

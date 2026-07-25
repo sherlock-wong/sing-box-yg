@@ -22,6 +22,16 @@ systemd_enable_restart sing-box.service
 [[ "$systemctl_calls" == $'enable sing-box.service\nrestart sing-box.service\n' ]]
 unset -f systemctl
 
+# Missing/failing optional Argo state must not prevent stopping the main service or vice versa.
+saved_systemd_stop_disable=$(declare -f systemd_stop_disable)
+stopped_units=
+systemctl(){ :; }
+systemd_stop_disable(){ stopped_units+="${1}"$'\n'; [[ "$1" != sing-box.service ]]; }
+stop_systemd_services
+[[ "$stopped_units" == $'sing-box.service\nsing-box-argo.service\n' ]]
+eval "$saved_systemd_stop_disable"
+unset -f systemctl
+
 set_case_dir(){
   STATE_DIR="$TEST_ROOT/$1"
   STATE_FILE="$STATE_DIR/protocols.json"
