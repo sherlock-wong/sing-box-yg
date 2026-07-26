@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.10'
+SCRIPT_VERSION='v26.7.25-fork.11'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -956,7 +956,104 @@ install_locked_script(){ # name url sha
 }
 acme(){ install_locked_script acme-yg "https://raw.githubusercontent.com/yonggekkk/acme-yg/${ACME_COMMIT}/acme.sh" "$ACME_SHA256"; }
 warp(){ install_locked_script warp-yg "https://raw.githubusercontent.com/yonggekkk/warp-yg/${WARP_COMMIT}/CFwarp.sh" "$WARP_SHA256"; }
-bbr(){ install_locked_script bbr "https://raw.githubusercontent.com/teddysun/across/${BBR_COMMIT}/bbr.sh" "$BBR_SHA256"; }
+bbr_sysctl_file(){ printf '%s\n' "${SBYG_BBR_SYSCTL_FILE:-/etc/sysctl.d/99-sing-box-yg-bbr.conf}"; }
+bbr_module_file(){ printf '%s\n' "${SBYG_BBR_MODULE_FILE:-/etc/modules-load.d/sing-box-yg-bbr.conf}"; }
+bbr_state_file(){ printf '%s/bbr-state\n' "$STATE_DIR"; }
+bbr_sysctl_value(){ sysctl -n "$1" 2>/dev/null || true; }
+bbr_available_algorithms(){ bbr_sysctl_value net.ipv4.tcp_available_congestion_control; }
+bbr_is_available(){ [[ " $(bbr_available_algorithms) " == *' bbr '* ]]; }
+bbr_try_load(){
+  bbr_is_available && return 0
+  command -v modprobe >/dev/null 2>&1 || return 1
+  modprobe tcp_bbr >/dev/null 2>&1 || return 1
+  bbr_is_available
+}
+bbr_show_status(){
+  local kernel available current qdisc owned
+  kernel=$(uname -r)
+  available=$(bbr_available_algorithms); current=$(bbr_sysctl_value net.ipv4.tcp_congestion_control)
+  qdisc=$(bbr_sysctl_value net.core.default_qdisc)
+  [[ -f "$(bbr_sysctl_file)" ]] && owned='本脚本管理' || owned='未由本脚本管理'
+  printf '  内核：%s\n' "${kernel:-未知}"
+  printf '  可用拥塞控制：%s\n' "${available:-无法读取}"
+  printf '  当前 TCP 拥塞控制：%s\n' "${current:-无法读取}"
+  printf '  默认队列规则：%s\n' "${qdisc:-无法读取}"
+  printf '  持久化状态：%s\n' "$owned"
+}
+bbr_enable_native(){
+  local sysctl_file module_file state_file old_cc old_qdisc temp
+  sysctl_file=$(bbr_sysctl_file); module_file=$(bbr_module_file); state_file=$(bbr_state_file)
+  if ! bbr_try_load; then
+    red '当前内核未提供 BBR；不会自动更换内核。可升级 VPS 官方内核后重试。'
+    return 0
+  fi
+  old_cc=$(bbr_sysctl_value net.ipv4.tcp_congestion_control)
+  old_qdisc=$(bbr_sysctl_value net.core.default_qdisc)
+  if [[ "$old_cc" == bbr && "$old_qdisc" == fq ]]; then
+    green '原生 BBR + fq 已生效，无需修改。'
+    return 0
+  fi
+  confirm_change '启用原生 BBR + fq？' \
+    "将只写入 $(bbr_sysctl_file)，保存当前值以便回退；不安装或替换内核。" || return 0
+  install -d -m 755 "$(dirname "$sysctl_file")" "$(dirname "$module_file")" "$STATE_DIR"
+  temp=$(tmpdir)
+  printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$temp/bbr.conf"
+  printf 'tcp_bbr\n' > "$temp/tcp_bbr"
+  printf 'tcp_congestion_control=%s\ndefault_qdisc=%s\n' "$old_cc" "$old_qdisc" > "$temp/bbr-state"
+  install -m 644 "$temp/bbr.conf" "$sysctl_file"
+  install -m 644 "$temp/tcp_bbr" "$module_file"
+  install -m 600 "$temp/bbr-state" "$state_file"
+  if ! sysctl -q -p "$sysctl_file" || [[ "$(bbr_sysctl_value net.ipv4.tcp_congestion_control)" != bbr ]] || [[ "$(bbr_sysctl_value net.core.default_qdisc)" != fq ]]; then
+    rm -f "$sysctl_file" "$module_file" "$state_file"
+    red 'BBR 参数未能验证，已撤销本次写入。'
+    return 0
+  fi
+  green '已启用原生 BBR + fq；重启后由本脚本的配置文件继续生效。'
+}
+bbr_revert_native(){
+  local sysctl_file module_file state_file key value old_cc= old_qdisc= current_cc current_qdisc
+  sysctl_file=$(bbr_sysctl_file); module_file=$(bbr_module_file); state_file=$(bbr_state_file)
+  [[ -f "$sysctl_file" || -f "$module_file" ]] || { yellow '没有发现由本脚本创建的 BBR 配置。'; return 0; }
+  confirm_change '撤销本脚本的 BBR 持久化配置？' \
+    '不会修改其他工具或系统已有的 BBR 设置；若当前值仍是本脚本写入的 bbr + fq，将恢复启用前的值。' || return 0
+  if [[ -r "$state_file" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in tcp_congestion_control) old_cc=$value;; default_qdisc) old_qdisc=$value;; esac
+    done < "$state_file"
+  fi
+  current_cc=$(bbr_sysctl_value net.ipv4.tcp_congestion_control)
+  current_qdisc=$(bbr_sysctl_value net.core.default_qdisc)
+  rm -f "$sysctl_file" "$module_file"
+  if [[ "$current_cc" == bbr && -n "$old_cc" ]]; then sysctl -qw "net.ipv4.tcp_congestion_control=$old_cc" || true; fi
+  if [[ "$current_qdisc" == fq && -n "$old_qdisc" ]]; then sysctl -qw "net.core.default_qdisc=$old_qdisc" || true; fi
+  rm -f "$state_file"
+  green '已撤销本脚本的 BBR 持久化配置。'
+}
+bbr_legacy_kernel_installer(){
+  confirm_change '运行旧版内核安装器？' \
+    '该兼容入口可能下载并修改系统内核、引导项及 sysctl，完成后可能需要重启；仅在内核不支持 BBR 且你明确接受风险时使用。' || return 0
+  install_locked_script bbr "https://raw.githubusercontent.com/teddysun/across/${BBR_COMMIT}/bbr.sh" "$BBR_SHA256"
+}
+bbr(){
+  local choice
+  while :; do
+    menu_header 'TCP / BBR 管理' '主菜单 / BBR'
+    bbr_show_status
+    echo
+    menu_item 1 '启用或修复原生 BBR + fq（推荐，不更换内核）'
+    menu_item 2 '撤销本脚本的 BBR 持久化配置'
+    menu_item 3 '运行旧版内核安装器（高风险，可能需重启）'
+    menu_back '返回主菜单'
+    ask '请选择 [0-3]：' choice
+    case "$choice" in
+      1) bbr_enable_native;;
+      2) bbr_revert_native;;
+      3) bbr_legacy_kernel_installer;;
+      0|'') return 0;;
+      *) red '无效输入。';;
+    esac
+  done
+}
 install_sbwpph(){ local a=$(cpu) h; [[ $a == amd64 ]] && h=$SBWPPH_AMD64_SHA256 || h=$SBWPPH_ARM64_SHA256; WORKDIR=$(tmpdir); download_verified "$FORK_RAW/sbwpph_${a}" "$h" "$WORKDIR/sbwpph" sbwpph; install -m 755 "$WORKDIR/sbwpph" "$STATE_DIR/sbwpph"; }
 require_install(){ [[ -f "$STATE_FILE" && -x "$STATE_DIR/sing-box" ]] || { red '请先安装。'; return 1; }; }
 
@@ -2047,6 +2144,7 @@ uninstall(){
     "$fw" -t nat -F SBYG_HY2 2>/dev/null || true
     "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
   done
+  rm -f "$(bbr_sysctl_file)" "$(bbr_module_file)"
   rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/init.d/sing-box /etc/init.d/sing-box-xray
   rm -f /usr/local/bin/sb
   systemctl daemon-reload 2>/dev/null || true
@@ -2082,7 +2180,7 @@ main(){
     menu_item 6 '查看服务日志'
     menu_item 7 '域名证书 / ACME'
     menu_item 8 'WARP'
-    menu_item 9 'BBR'
+    menu_item 9 'TCP / BBR 管理'
     menu_item 10 'WARP-plus'
     menu_item 11 '卸载'
     menu_back '退出'

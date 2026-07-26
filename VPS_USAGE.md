@@ -65,7 +65,7 @@ AnyTLS 和 Hysteria2 使用普通 TLS：SNI 应与该协议绑定证书的实际
 
 ## 运维与故障处理
 
-主菜单 `3` 应用最新状态并重启，`4` 更新/切换 Sing-box 内核，`5` 进入更新管理，`6` 同时查看 Sing-box 与 Xray 日志，`11` 卸载。脚本更新会先显示渠道和下载地址并要求确认；下载和校验成功后保存渠道并立即切换到新进程，所以菜单顶部的版本与渠道应当马上变化。确认卸载后会逐个停止并禁用 Sing-box、`sing-box-xray` 与 Argo 服务；如果 systemd 未能结束已解析出的 MainPID，则先 TERM、等待后再 KILL，避免删除服务文件后遗留运行进程。随后删除脚本拥有的 UFW 规则、`/etc/s-box`、systemd/OpenRC 服务文件、Hy2 防火墙跳跃链和 `/usr/local/bin/sb` 并立即返回终端；取消卸载则留在主菜单。自选其他官方 Sing-box 内核必须有对应官方 `sha256sum.txt`，没有就拒绝安装。下载、校验、`sing-box check` 或 `xray run -test` 失败时，临时文件会清理，旧配置不会替换。
+主菜单 `3` 应用最新状态并重启，`4` 更新/切换 Sing-box 内核，`5` 进入更新管理，`6` 同时查看 Sing-box 与 Xray 日志，`9` 是 TCP / BBR 管理，`11` 卸载。BBR 管理会显示内核、可用算法、当前拥塞控制、默认队列规则和脚本管理状态；推荐选项 `1`，它只在当前内核已提供 BBR 时写入 `/etc/sysctl.d/99-sing-box-yg-bbr.conf`，启用 `bbr + fq` 后立即验证，并保存启用前值供选项 `2` 回退。它不会自动更换内核。选项 `3` 是保留的旧版内核安装器，可能下载内核、修改引导并要求重启，只应在明确知情时使用。BBR 只影响 TCP，因此 Vless-Reality、AnyTLS 与非 Argo 的 Vmess-WS 可能受益；Hysteria2 属于 UDP/QUIC，不受 Linux TCP BBR 控制。卸载会移除本脚本创建的 BBR 持久化文件，但不会覆盖其他工具的 TCP 参数。脚本更新会先显示渠道和下载地址并要求确认；下载和校验成功后保存渠道并立即切换到新进程，所以菜单顶部的版本与渠道应当马上变化。确认卸载后会逐个停止并禁用 Sing-box、`sing-box-xray` 与 Argo 服务；如果 systemd 未能结束已解析出的 MainPID，则先 TERM、等待后再 KILL，避免删除服务文件后遗留运行进程。随后删除脚本拥有的 UFW 规则、`/etc/s-box`、systemd/OpenRC 服务文件、Hy2 防火墙跳跃链和 `/usr/local/bin/sb` 并立即返回终端；取消卸载则留在主菜单。自选其他官方 Sing-box 内核必须有对应官方 `sha256sum.txt`，没有就拒绝安装。下载、校验、`sing-box check` 或 `xray run -test` 失败时，临时文件会清理，旧配置不会替换。
 
 遇到连接问题先检查安全组、防火墙、协议端口和 `sb → 6` 日志，再执行主菜单 `3` 重启。切换内核时，如果现有配置不能通过新内核检查，旧内核会保留。卸载需要输入大写 `YES`。
 

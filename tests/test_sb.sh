@@ -48,6 +48,45 @@ set_case_dir(){
   mkdir -p "$STATE_DIR"
 }
 
+# Native BBR management only owns its own sysctl/module files, verifies the
+# resulting runtime values, and returns to the captured pre-change values.
+set_case_dir bbr
+export SBYG_BBR_SYSCTL_FILE="$TEST_ROOT/bbr/99-sing-box-yg-bbr.conf"
+export SBYG_BBR_MODULE_FILE="$TEST_ROOT/bbr/sing-box-yg-bbr.conf"
+bbr_cc=cubic
+bbr_qdisc=fq_codel
+sysctl(){
+  case "$1" in
+    -n)
+      case "$2" in
+        net.ipv4.tcp_available_congestion_control) printf 'reno cubic bbr\n';;
+        net.ipv4.tcp_congestion_control) printf '%s\n' "$bbr_cc";;
+        net.core.default_qdisc) printf '%s\n' "$bbr_qdisc";;
+      esac
+      ;;
+    -q)
+      [[ "$2" == -p ]] && { bbr_cc=bbr; bbr_qdisc=fq; }
+      ;;
+    -qw)
+      case "$2" in
+        net.ipv4.tcp_congestion_control=*) bbr_cc=${2#*=};;
+        net.core.default_qdisc=*) bbr_qdisc=${2#*=};;
+      esac
+      ;;
+  esac
+}
+saved_confirm_change=$(declare -f confirm_change)
+confirm_change(){ return 0; }
+bbr_enable_native
+[[ -f "$SBYG_BBR_SYSCTL_FILE" && -f "$SBYG_BBR_MODULE_FILE" && -f "$(bbr_state_file)" ]]
+[[ "$bbr_cc" == bbr && "$bbr_qdisc" == fq ]]
+bbr_revert_native
+[[ ! -e "$SBYG_BBR_SYSCTL_FILE" && ! -e "$SBYG_BBR_MODULE_FILE" && ! -e "$(bbr_state_file)" ]]
+[[ "$bbr_cc" == cubic && "$bbr_qdisc" == fq_codel ]]
+eval "$saved_confirm_change"
+unset -f sysctl
+unset SBYG_BBR_SYSCTL_FILE SBYG_BBR_MODULE_FILE
+
 # Update channels persist across later `sb` runs, while an explicit environment
 # selection wins for the current run and is validated before use.
 set_case_dir channel
