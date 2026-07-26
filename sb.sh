@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.6'
+SCRIPT_VERSION='v26.7.25-vpnm.7'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -834,9 +834,8 @@ restart_service(){
 }
 
 new_state(){
-  local core=$1 tls_domain=${2:-www.bing.com} id reality_private reality_public sid cert_key cert_crt
+  local core=$1 tls_domain=www.bing.com id reality_private reality_public sid cert_key cert_crt
   local pair
-  valid_domain_name "$tls_domain" || tls_domain=www.bing.com
   id=$($STATE_DIR/sing-box generate uuid)
   pair=$($STATE_DIR/sing-box generate reality-keypair)
   reality_private=$(printf '%s\n' "$pair" | awk -F': ' '/PrivateKey/{print $2}')
@@ -1021,7 +1020,7 @@ state_for_protocol_tags(){ # core "tag tag ..." [settings JSON] -> JSON state
   reality_sni=$(jq -r '.reality_sni // "www.apple.com"' <<<"$settings")
   public_address=$(jq -r '.public_address // ""' <<<"$settings")
   valid_domain_name "$tls_domain" && valid_domain_name "$reality_sni" && { [[ -z "$public_address" ]] || valid_host "$public_address"; } || return 1
-  state=$(new_state "$core" "$tls_domain")
+  state=$(new_state "$core")
   for tag in $tags; do
     configured_port=$(jq -r --arg t "$tag" '.ports[$t] // 0' <<<"$settings")
     if valid_port "$configured_port"; then
@@ -1038,15 +1037,16 @@ state_for_protocol_tags(){ # core "tag tag ..." [settings JSON] -> JSON state
     state=$(jq --arg t "$tag" --argjson p "$p" \
       '.protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
   done
-  state=$(jq --arg sni "$reality_sni" --arg domain "$tls_domain" --arg address "$public_address" '
+  state=$(jq --arg sni "$reality_sni" --arg address "$public_address" '
     .public_address=$address |
     .protocols.vless.sni=$sni |
     .protocols.vless.xray.target=($sni+":443") |
-    .protocols.vless.xray.server_names=[$sni] |
-    .protocols.vmess.domain=$domain |
-    .protocols.hy2.domain=$domain |
-    .protocols.anytls.domain=$domain
+    .protocols.vless.xray.server_names=[$sni]
   ' <<<"$state")
+  for tag in vmess hy2 anytls; do
+    [[ " $tags " == *" $tag "* ]] || continue
+    state=$(jq --arg t "$tag" --arg domain "$tls_domain" '.protocols[$t].domain=$domain' <<<"$state")
+  done
   printf '%s\n' "$state"
 }
 select_protocols(){ # compatibility wrapper used by tests and library callers
@@ -2408,8 +2408,15 @@ domain_certificate_wizard(){
 }
 show_certificate(){
   local id name cert mode der_pin spki_pin source
-  echo '证书库与协议绑定：'
-  jq '{bindings:{vmess:{domain:.protocols.vmess.domain,certificate_id:.protocols.vmess.certificate_id},hy2:{domain:.protocols.hy2.domain,certificate_id:.protocols.hy2.certificate_id},anytls:{domain:.protocols.anytls.domain,certificate_id:.protocols.anytls.certificate_id}},certificates}' "$STATE_FILE"
+  echo '已启用协议的证书绑定（未启用协议不参与服务，也不在此列表中）：'
+  jq '{
+    bindings:(.protocols | to_entries |
+      map(select((.key=="vmess" or .key=="hy2" or .key=="anytls") and .value.enabled) |
+          {key:.key,value:{domain:.value.domain,certificate_id:.value.certificate_id}}) | from_entries),
+    inactive_protocols:(.protocols | to_entries |
+      map(select((.key=="vmess" or .key=="hy2" or .key=="anytls") and (.value.enabled|not)) | .key)),
+    certificates
+  }' "$STATE_FILE"
   while IFS=$'\t' read -r id name cert mode; do
     echo
     printf '[%s] %s（%s）\n' "$id" "$name" "$mode"

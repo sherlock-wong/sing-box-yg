@@ -199,10 +199,11 @@ jq -e '
   .protocols.vless.sni=="reality.example.com" and
   .protocols.vless.xray.target=="reality.example.com:443" and
   .protocols.vless.xray.server_names==["reality.example.com"] and
-  .protocols.vmess.domain=="tls.example.com" and .protocols.anytls.domain=="tls.example.com"
+  .protocols.vmess.domain=="tls.example.com" and .protocols.anytls.domain=="tls.example.com" and
+  .protocols.hy2.domain=="www.bing.com" and .protocols.hy2.certificate_id=="default"
 ' <<<"$custom_state" >/dev/null
 jq -e '.tls_certificate.mode=="acme"' <<<"$custom_setup" >/dev/null
-openssl x509 -in "$STATE_DIR/cert.pem" -noout -text | grep -Fq 'DNS:tls.example.com'
+openssl x509 -in "$STATE_DIR/cert.pem" -noout -text | grep -Fq 'DNS:www.bing.com'
 if choose_initial_setup vless <<<"0" >/dev/null; then
   echo 'initial setup cancellation unexpectedly succeeded' >&2
   exit 1
@@ -229,6 +230,8 @@ initial_tls_cert_id=$(jq -r '.protocols.anytls.certificate_id' <<<"$initial_tls_
 [[ "$initial_tls_cert_id" != default ]]
 jq -e --arg id "$initial_tls_cert_id" '
   .protocols.anytls.domain=="initial-tls.example.com" and
+  .protocols.vmess.domain=="www.bing.com" and .protocols.vmess.certificate_id=="default" and
+  .protocols.hy2.domain=="www.bing.com" and .protocols.hy2.certificate_id=="default" and
   .certificates[$id].mode=="trusted" and .certificates[$id].insecure==false and
   .certificates[$id].source.auto_sync==true
 ' <<<"$initial_tls_state" >/dev/null
