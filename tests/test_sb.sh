@@ -183,10 +183,10 @@ jq -e '[.protocols|to_entries[]|select(.value.enabled)|.key] == ["vless","hy2","
 # First-install custom mode keeps selected ports and initial address/domain
 # settings in the state, while the default mode remains random and preset.
 default_setup=$(initial_default_settings)
-jq -e '.custom==false and .ports=={} and .reality_sni=="www.apple.com" and .tls_domain=="www.bing.com"' <<<"$default_setup" >/dev/null
+jq -e '.custom==false and .ports=={} and .reality_sni=="www.apple.com" and .tls_domain=="www.bing.com" and .tls_certificate.mode=="fixed"' <<<"$default_setup" >/dev/null
 saved_port_available=$(declare -f port_available)
 port_available(){ return 0; }
-custom_setup=$(choose_initial_setup 'vless vmess anytls' <<< $'2\n21001\n21002\n21003\nreality.example.com\ntls.example.com\nnode.example.com')
+custom_setup=$(choose_initial_setup 'vless vmess anytls' <<< $'2\n21001\n21002\n21003\nreality.example.com\ntls.example.com\n1\nnode.example.com')
 custom_state=$(state_for_protocol_tags 1.13.14 'vless vmess anytls' "$custom_setup")
 eval "$saved_port_available"
 jq -e '
@@ -197,6 +197,7 @@ jq -e '
   .protocols.vless.xray.server_names==["reality.example.com"] and
   .protocols.vmess.domain=="tls.example.com" and .protocols.anytls.domain=="tls.example.com"
 ' <<<"$custom_state" >/dev/null
+jq -e '.tls_certificate.mode=="acme"' <<<"$custom_setup" >/dev/null
 openssl x509 -in "$STATE_DIR/cert.pem" -noout -text | grep -Fq 'DNS:tls.example.com'
 if choose_initial_setup vless <<<"0" >/dev/null; then
   echo 'initial setup cancellation unexpectedly succeeded' >&2
@@ -211,12 +212,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=initial-tls.example
   -keyout "$STATE_DIR/source.key" -out "$STATE_DIR/source.pem" >/dev/null 2>&1
 saved_port_available=$(declare -f port_available)
 port_available(){ return 0; }
-initial_tls_settings=$(jq -cn '{custom:true,ports:{anytls:21111},reality_sni:"www.apple.com",tls_domain:"initial-tls.example.com",public_address:""}')
+initial_tls_settings=$(jq -cn --arg cert "$STATE_DIR/source.pem" --arg key "$STATE_DIR/source.key" \
+  '{custom:true,ports:{anytls:21111},reality_sni:"www.apple.com",tls_domain:"initial-tls.example.com",tls_certificate:{mode:"import",cert:$cert,key:$key},public_address:""}')
 initial_tls_state=$(state_for_protocol_tags 1.13.14 anytls "$initial_tls_settings")
 eval "$saved_port_available"
 saved_initial_certificate_matches_domain=$(declare -f certificate_matches_domain)
 certificate_matches_domain(){ [[ "$1:$2" == "$STATE_DIR/source.pem:initial-tls.example.com" ]]; }
-initial_tls_certificate_setup "$initial_tls_state" anytls "$initial_tls_settings" <<< $'2\n'"$STATE_DIR/source.pem"$'\n'"$STATE_DIR/source.key"
+initial_tls_certificate_setup "$initial_tls_state" anytls "$initial_tls_settings"
 eval "$saved_initial_certificate_matches_domain"
 initial_tls_state=$INITIAL_TLS_STATE
 initial_tls_cert_id=$(jq -r '.protocols.anytls.certificate_id' <<<"$initial_tls_state")
