@@ -308,6 +308,19 @@ grep -q 'CA:FALSE' <<<"$four_cert_text"
 expected_der_pin=$(certificate_der_sha256 "$four_cert")
 expected_spki_pin=$(certificate_spki_sha256 "$four_cert")
 
+# A manager with no enabled protocol is valid: it keeps state/library files but
+# produces an empty Sing-box config and stops both managed core services.
+zero_state=$(jq '.protocols |= with_entries(.value.configured=false | .value.enabled=false | .value.port=0)' <<<"$four_state")
+validate_state "$zero_state"
+render_config "$zero_state" "$STATE_DIR/zero.json"
+"$STATE_DIR/sing-box" check -c "$STATE_DIR/zero.json"
+[[ $(jq '.inbounds|length' "$STATE_DIR/zero.json") -eq 0 ]]
+systemctl_calls=
+systemctl(){ systemctl_calls+="${*}"$'\n'; }
+reconcile_core_services "$zero_state"
+[[ "$systemctl_calls" == $'disable --now vps-net-manager\ndisable --now vps-net-manager-xray\n' ]] || exit 1
+unset -f systemctl
+
 # Credential rotation defaults to generated material, while deleting a protocol
 # resets only that protocol and leaves the certificate library intact.
 saved_rotation_apply=$(declare -f apply_state)

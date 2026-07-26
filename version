@@ -1,6 +1,8 @@
-v26.7.25-vpnm.12
+v26.7.25-vpnm.13
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
+
+改进：允许零协议状态。停用或删除最后一个协议会清理监听、订阅和脚本管理的 UFW 规则，并停止 Sing-box/Xray；证书库、Realm、WARP、TCP/BBR 等独立功能仍可继续使用，之后可随时添加协议。
 
 修复：删除协议配置后，协议改为“未添加”状态，界面不再显示 UUID、密码或 Reality 私钥等模板内容；选择该协议只提供“添加协议”，重新添加后才进入端口和专项配置向导。
 

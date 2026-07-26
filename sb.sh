@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.11'
+SCRIPT_VERSION='v26.7.25-vpnm.13'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -1155,7 +1155,6 @@ validate_state(){
     ] | all) and
     ([.protocols.vmess,.protocols.hy2,.protocols.anytls] |
       all(.certificate_id|type=="string") and all(.certificate_id as $id | $certs[$id] != null)) and
-    ([.protocols[]|select(.enabled)]|length)>0 and
     (.protocols.vless.engine=="sing-box" or .protocols.vless.engine=="xray") and
     .protocols.vmess.engine=="sing-box" and
     .protocols.hy2.engine=="sing-box" and
@@ -2922,9 +2921,8 @@ toggle_protocol(){
   local tag=$1 state p label hop conflict
   label=$(protocol_label "$tag")
   if tag_enabled "$tag"; then
-    (( $(enabled_count) > 1 )) || { red '至少保留一个协议。'; return 0; }
     confirm_change "确认停用 ${label}？" \
-      '服务配置、节点链接、二维码、订阅及脚本管理的 UFW 规则将同步移除；协议参数会保留。' || return 0
+      '服务配置、节点链接、二维码、订阅及脚本管理的 UFW 规则将同步移除；协议参数会保留。若这是最后一个协议，Sing-box/Xray 将停止。' || return 0
     state=$(jq --arg t "$tag" '.protocols[$t].enabled=false' "$STATE_FILE")
   else
     [[ "$tag" != anytls || $(jq -r '.core' "$STATE_FILE") != 1.10* ]] || { red '1.10 内核不支持 AnyTLS。'; return 0; }
@@ -2979,12 +2977,8 @@ reset_protocol_state(){ # tag -> state JSON with the protocol reset but retained
 delete_protocol(){
   local tag=$1 label state
   label=$(protocol_label "$tag")
-  if tag_enabled "$tag" && (( $(enabled_count) <= 1 )); then
-    red '至少保留一个已启用协议；请先启用其他协议，再删除当前协议。'
-    return 0
-  fi
   confirm_change "确认删除 ${label} 的协议配置？" \
-    '删除会停用该协议、释放端口、重置凭据和专项参数，并移除节点、订阅与脚本管理的 UFW 规则；证书库不会删除。' || return 0
+    '删除会停用该协议、释放端口、重置凭据和专项参数，并移除节点、订阅与脚本管理的 UFW 规则；证书库不会删除。若这是最后一个协议，Sing-box/Xray 将停止。' || return 0
   state=$(reset_protocol_state "$tag") || { red '生成删除后的默认协议配置失败，原配置未改变。'; return 0; }
   apply_state "$state"
 }
