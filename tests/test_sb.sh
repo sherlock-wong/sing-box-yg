@@ -289,6 +289,24 @@ valid_host node.example.com
 ! valid_host 999.1.1.1
 ! valid_host 'bad host!'
 
+# Realm rules use a separate, constrained state file and render stable TOML
+# without sharing Sing-box listener or certificate state.
+set_case_dir realm
+realm_state=$(realm_default_state)
+realm_state=$(jq '.rules=[
+  {id:"realm_a1b2c3d4",listen_host:"0.0.0.0",listen_port:40123,remote_host:"203.0.113.10",remote_port:443},
+  {id:"realm_e5f60708",listen_host:"2001:db8::1",listen_port:40124,remote_host:"2001:db8::2",remote_port:8443}
+]' <<<"$realm_state")
+realm_validate_state "$realm_state"
+realm_render_config "$realm_state" "$STATE_DIR/realm.toml"
+grep -Fqx 'listen = "0.0.0.0:40123"' "$STATE_DIR/realm.toml"
+grep -Fqx 'remote = "[2001:db8::2]:8443"' "$STATE_DIR/realm.toml"
+grep -Fqx 'use_udp = true' "$STATE_DIR/realm.toml"
+realm_duplicate=$(jq '.rules[1].listen_host="0.0.0.0" | .rules[1].listen_port=40123' <<<"$realm_state")
+! realm_validate_state "$realm_duplicate"
+realm_bad_id=$(jq '.rules[0].id="bad"' <<<"$realm_state")
+! realm_validate_state "$realm_bad_id"
+
 # Active UFW changes are transactional: open candidate ports first, then remove only owned old rules.
 old_fw_state=$(jq '.protocols.vmess.enabled=false | .protocols.hy2.udp_hop=""' <<<"$four_state")
 old_vless_port=$(jq -r '.protocols.vless.port' <<<"$old_fw_state")

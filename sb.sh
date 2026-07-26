@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# VPS-only sing-box-yg manager.  Serv00 files intentionally live separately.
+# VPS-only sing-box-yg manager.
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.16'
+SCRIPT_VERSION='v26.7.25-fork.17'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -42,6 +42,9 @@ METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a35
 REALITY_SCAN_SAMPLES=3
 REALITY_TARGETS_SHA256=eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda
 ANYTLS_DEFAULT_PADDING='["stop=8","0=30-30","1=100-400","2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000","3=9-9,500-1000","4=500-1000","5=500-1000","6=500-1000","7=500-1000"]'
+REALM_VERSION=2.9.4
+REALM_AMD64_SHA256=9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd
+REALM_ARM64_SHA256=1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99
 
 red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
@@ -301,17 +304,21 @@ service_runtime_status(){
   printf 'SB:%s XR:%s' "$sing" "$xray"
 }
 main_dashboard(){
-  local core='--' xray= protocols=0
+  local core='--' xray= protocols=0 realm='未安装'
   if [[ -f "$STATE_FILE" ]]; then
     core=$(jq -r '.core // "--"' "$STATE_FILE" 2>/dev/null || printf '%s' '--')
     jq -e '.protocols.vless.enabled and .protocols.vless.engine=="xray"' "$STATE_FILE" >/dev/null 2>&1 &&
       xray=" / Xray $(jq -r '.xray_core' "$STATE_FILE")"
     protocols=$(enabled_count 2>/dev/null || printf '0')
   fi
+  if realm_install_valid; then
+    realm=$(systemctl is-active "$(realm_service_name)" 2>/dev/null || printf '未运行')
+  fi
   menu_header "sing-box-yg ${SCRIPT_VERSION}" '主菜单'
   printf '  渠道：%-18s 服务：%s\n' "$FORK_BRANCH" "$(service_runtime_status)"
   printf '  内核：Sing-box %s%s\n' "$core" "$xray"
   printf '  协议：%s 个已启用\n' "$protocols"
+  printf '  Realm：%s\n' "$realm"
   menu_rule
 }
 cancel_input(){ [[ -z "$1" || "$1" == 0 ]]; }
@@ -461,6 +468,256 @@ xray_install_valid(){
   reported=$("$STATE_DIR/xray" version 2>/dev/null) || return 1
   reported=${reported%%$'\n'*}
   [[ "$reported" == "Xray ${XRAY_DEFAULT} "* ]]
+}
+
+realm_dir(){ printf '%s/realm\n' "$STATE_DIR"; }
+realm_binary(){ printf '%s/realm\n' "$(realm_dir)"; }
+realm_state_file(){ printf '%s/rules.json\n' "$(realm_dir)"; }
+realm_config_file(){ printf '%s/config.toml\n' "$(realm_dir)"; }
+realm_service_name(){ printf 'sing-box-realm.service\n'; }
+realm_supported_os(){
+  local id=
+  [[ -r /etc/os-release ]] || return 1
+  . /etc/os-release
+  id=${ID:-}
+  [[ "$id" == debian || "$id" == ubuntu ]]
+}
+realm_require_supported(){
+  realm_supported_os || { red 'Realm 端口转发当前仅支持 Debian 或 Ubuntu（systemd）。'; return 1; }
+  command -v systemctl >/dev/null 2>&1 || { red 'Realm 端口转发需要 systemd。'; return 1; }
+}
+realm_archive_hash(){
+  case "$(cpu)" in amd64) printf '%s\n' "$REALM_AMD64_SHA256";;arm64) printf '%s\n' "$REALM_ARM64_SHA256";;*)return 1;; esac
+}
+realm_archive_name(){
+  case "$(cpu)" in amd64) printf 'realm-x86_64-unknown-linux-gnu.tar.gz\n';;arm64) printf 'realm-aarch64-unknown-linux-gnu.tar.gz\n';;*)return 1;; esac
+}
+realm_endpoint_address(){ # host port
+  [[ "$1" == *:* ]] && printf '[%s]:%s' "$1" "$2" || printf '%s:%s' "$1" "$2"
+}
+realm_default_state(){ printf '%s\n' '{"schema":1,"rules":[]}'; }
+realm_normalize_state(){ jq '
+  .schema=1 | .rules=(.rules // []) |
+  .rules |= map({id:(.id // ""),listen_host:(.listen_host // "0.0.0.0"),listen_port:(.listen_port // 0),remote_host:(.remote_host // ""),remote_port:(.remote_port // 0)})
+'; }
+realm_validate_state(){
+  local state=$1 id host port seen=$'\n'
+  jq -e '.schema==1 and (.rules|type=="array") and
+    ([.rules[] | (.id|type=="string" and length>0) and (.listen_host|type=="string") and (.listen_port|type=="number") and (.remote_host|type=="string") and (.remote_port|type=="number")] | all)' <<<"$state" >/dev/null || return 1
+  while IFS=$'\t' read -r id host port remote remote_port; do
+    [[ "$id" =~ ^realm_[a-f0-9]{8}$ ]] || return 1
+    valid_host "$host" && valid_port "$port" && valid_host "$remote" && valid_port "$remote_port" || return 1
+    [[ "$seen" != *$'\n'"$host:$port"$'\n'* ]] || return 1
+    seen+="$host:$port"$'\n'
+  done < <(jq -r '.rules[] | [.id,.listen_host,.listen_port,.remote_host,.remote_port] | @tsv' <<<"$state")
+}
+realm_render_config(){ # state output
+  local state=$1 out=$2 listen remote
+  {
+    printf '%s\n' '# Managed by sing-box-yg. Edit via sb → Realm 端口转发 to preserve state.'
+    printf '%s\n' '[log]' 'level = "warn"' '' '[network]' 'no_tcp = false' 'use_udp = true' 'ipv6_only = false' ''
+    while IFS=$'\t' read -r host port remote_host remote_port; do
+      listen=$(realm_endpoint_address "$host" "$port")
+      remote=$(realm_endpoint_address "$remote_host" "$remote_port")
+      printf '%s\n' '[[endpoints]]'
+      printf 'listen = "%s"\nremote = "%s"\n\n' "$listen" "$remote"
+    done < <(jq -r '.rules[] | [.listen_host,.listen_port,.remote_host,.remote_port] | @tsv' <<<"$state")
+  } > "$out"
+}
+realm_write_service(){
+  local bin config unit
+  bin=$(realm_binary); config=$(realm_config_file); unit=/etc/systemd/system/$(realm_service_name)
+  cat > "$unit" <<EOF
+[Unit]
+Description=sing-box-yg Realm port forwarding
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$bin -c $config
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+}
+realm_install_binary(){
+  local archive hash name work extracted bin
+  realm_require_supported || return 1
+  name=$(realm_archive_name) || { red 'Realm 不支持当前 CPU 架构。'; return 1; }
+  hash=$(realm_archive_hash) || return 1
+  work=$(tmpdir); archive="$work/$name"
+  download_verified "https://github.com/zhboner/realm/releases/download/v${REALM_VERSION}/$name" "$hash" "$archive" "Realm ${REALM_VERSION}/$(cpu)"
+  tar -xzf "$archive" -C "$work" || { red 'Realm 发布包无效。'; return 1; }
+  extracted=$(find "$work" -type f -name realm -perm -u+x | head -n1)
+  [[ -n "$extracted" && -x "$extracted" ]] || { red 'Realm 发布包缺少可执行文件。'; return 1; }
+  install -d -m 700 "$(realm_dir)"
+  install -m 755 "$extracted" "$(realm_binary)"
+  printf '%s\n' "$REALM_VERSION" > "$(realm_dir)/version"
+  printf '%s\n' "$hash" > "$(realm_dir)/archive.sha256"
+  chmod 600 "$(realm_dir)/version" "$(realm_dir)/archive.sha256"
+}
+realm_install_valid(){
+  local expected
+  expected=$(realm_archive_hash) || return 1
+  [[ -x "$(realm_binary)" && -r "$(realm_dir)/version" && -r "$(realm_dir)/archive.sha256" ]] || return 1
+  [[ $(cat "$(realm_dir)/version") == "$REALM_VERSION" && $(cat "$(realm_dir)/archive.sha256") == "$expected" ]]
+}
+realm_ufw_prepare(){ # candidate transaction
+  local state=$1 transaction=$2 id port tag spec
+  ufw_active || return 0
+  : > "$transaction"
+  while IFS=$'\t' read -r id port; do
+    for spec in "$port/tcp" "$port/udp"; do
+      tag="realm-${id}-${spec#*/}"
+      if ufw_allow_exists "$spec" "$tag" || ufw_allow_exists "$spec"; then continue; fi
+      ufw_add_rule "$tag" "$spec" || { ufw_rollback_candidate "$transaction"; return 1; }
+      printf '%s\t%s\n' "$tag" "$spec" >> "$transaction"
+    done
+  done < <(jq -r '.rules[] | [.id,.listen_port] | @tsv' <<<"$state")
+}
+realm_ufw_finalize(){ # old candidate
+  local old=$1 candidate=$2 id port tag spec
+  ufw_active || return 0
+  while IFS=$'\t' read -r id port; do
+    jq -e --arg id "$id" --argjson port "$port" '.rules[] | select(.id==$id and .listen_port==$port)' <<<"$candidate" >/dev/null && continue
+    for spec in "$port/tcp" "$port/udp"; do
+      tag="realm-${id}-${spec#*/}"; ufw_delete_rule "$tag" "$spec" || true
+    done
+  done < <(jq -r '.rules[] | [.id,.listen_port] | @tsv' <<<"$old")
+}
+realm_apply_state(){ # candidate JSON stdin
+  local candidate old tmp state_tmp config_tmp old_state old_config transaction rules
+  realm_require_supported || return 1
+  candidate=$(realm_normalize_state <<<"$(cat)") || return 1
+  realm_validate_state "$candidate" || { red 'Realm 规则无效：检查监听地址、端口、目标地址以及重复监听端口。'; return 1; }
+  realm_install_valid || { red 'Realm 未安装或完整性标记无效，请先选择安装/更新。'; return 1; }
+  tmp=$(tmpdir); state_tmp="$tmp/rules.json"; config_tmp="$tmp/config.toml"; old_state="$tmp/old-rules.json"; old_config="$tmp/old-config.toml"; transaction="$tmp/ufw-added.tsv"
+  printf '%s\n' "$candidate" > "$state_tmp"; realm_render_config "$candidate" "$config_tmp" || return 1
+  [[ -f "$(realm_state_file)" ]] && cp "$(realm_state_file)" "$old_state"
+  [[ -f "$(realm_config_file)" ]] && cp "$(realm_config_file)" "$old_config"
+  realm_ufw_prepare "$candidate" "$transaction" || { red 'UFW 无法放行 Realm 新端口，原规则未改变。'; return 1; }
+  install -d -m 700 "$(realm_dir)"
+  chmod 600 "$state_tmp" "$config_tmp"
+  mv "$state_tmp" "$(realm_state_file)"; mv "$config_tmp" "$(realm_config_file)"
+  if ! realm_write_service; then
+    red '无法写入 Realm systemd 服务，正在恢复旧规则。'
+    [[ -f "$old_state" ]] && cp "$old_state" "$(realm_state_file)" || rm -f "$(realm_state_file)"
+    [[ -f "$old_config" ]] && cp "$old_config" "$(realm_config_file)" || rm -f "$(realm_config_file)"
+    ufw_rollback_candidate "$transaction"
+    return 1
+  fi
+  rules=$(jq '.rules|length' <<<"$candidate")
+  if ((rules == 0)); then
+    systemd_stop_disable "$(realm_service_name)"
+  elif ! systemd_enable_restart "$(realm_service_name)"; then
+    red 'Realm 重启失败，正在回滚原规则。'
+    [[ -f "$old_state" ]] && cp "$old_state" "$(realm_state_file)" || rm -f "$(realm_state_file)"
+    [[ -f "$old_config" ]] && cp "$old_config" "$(realm_config_file)" || rm -f "$(realm_config_file)"
+    ufw_rollback_candidate "$transaction"
+    [[ -f "$old_state" ]] && { realm_write_service || true; systemd_enable_restart "$(realm_service_name)" || true; } || systemd_stop_disable "$(realm_service_name)"
+    return 1
+  fi
+  [[ -f "$old_state" ]] && realm_ufw_finalize "$(cat "$old_state")" "$candidate"
+  green 'Realm 规则已原子替换，TCP 与 UDP 均已转发；UFW（如启用）已同步。'
+}
+realm_install(){
+  local state
+  realm_require_supported || return 0
+  realm_install_binary || return 0
+  if [[ -f "$(realm_state_file)" ]]; then
+    state=$(cat "$(realm_state_file)")
+    printf '%s\n' "$state" | realm_apply_state || return 0
+    green "Realm ${REALM_VERSION} 已更新、校验并按现有规则重启。"
+  else
+    state=$(realm_default_state)
+    printf '%s\n' "$state" > "$(realm_state_file)"
+    realm_render_config "$state" "$(realm_config_file)"
+    chmod 600 "$(realm_state_file)" "$(realm_config_file)"
+    realm_write_service || return 0
+    green "Realm ${REALM_VERSION} 已下载并校验。请添加至少一条规则后启动服务。"
+  fi
+}
+realm_add_rule(){
+  local listen_host listen_port remote_host remote_port id candidate
+  realm_install_valid || { red '请先安装 Realm。'; return 0; }
+  ask '监听地址（默认 0.0.0.0；回车使用默认，0 返回）：' listen_host
+  [[ -z "$listen_host" ]] && listen_host=0.0.0.0
+  [[ "$listen_host" == 0 ]] && return 0
+  valid_host "$listen_host" || { red '监听地址必须是 IPv4、IPv6 或域名格式的 IP 地址。'; return 0; }
+  ask '监听端口（回车/0 返回）：' listen_port
+  cancel_input "$listen_port" && return 0
+  valid_port "$listen_port" || { red '端口无效。'; return 0; }
+  port_available "$listen_port" || { red '该端口已被本机进程占用。'; return 0; }
+  jq -e --arg host "$listen_host" --argjson port "$listen_port" '.rules[] | select(.listen_host==$host and .listen_port==$port)' "$(realm_state_file)" >/dev/null && { red '该监听地址和端口已存在 Realm 规则。'; return 0; }
+  ask '目标地址（IPv4、IPv6 或域名；回车/0 返回）：' remote_host
+  cancel_input "$remote_host" && return 0
+  valid_host "$remote_host" || { red '目标地址无效。'; return 0; }
+  ask '目标端口（回车/0 返回）：' remote_port
+  cancel_input "$remote_port" && return 0
+  valid_port "$remote_port" || { red '目标端口无效。'; return 0; }
+  id="realm_$(openssl rand -hex 4)"
+  candidate=$(jq --arg id "$id" --arg listen_host "$listen_host" --argjson listen_port "$listen_port" --arg remote_host "$remote_host" --argjson remote_port "$remote_port" '.rules += [{id:$id,listen_host:$listen_host,listen_port:$listen_port,remote_host:$remote_host,remote_port:$remote_port}]' "$(realm_state_file)")
+  confirm_change "确认新增 ${listen_host}:${listen_port} → ${remote_host}:${remote_port}？" 'Realm 每条规则会同时转发 TCP 与 UDP；UFW 启用时将放行这两个协议。' || return 0
+  printf '%s\n' "$candidate" | realm_apply_state
+}
+realm_list_rules(){
+  local id listen_host listen_port remote_host remote_port
+  realm_install_valid || { yellow 'Realm 未安装。'; return 0; }
+  printf 'Realm %s，服务：%s\n' "$REALM_VERSION" "$(systemctl is-active "$(realm_service_name)" 2>/dev/null || printf '未运行')"
+  printf '%-16s %-28s %s\n' '规则 ID' '监听（TCP+UDP）' '目标'
+  while IFS=$'\t' read -r id listen_host listen_port remote_host remote_port; do
+    printf '%-16s %-28s %s\n' "$id" "$(realm_endpoint_address "$listen_host" "$listen_port")" "$(realm_endpoint_address "$remote_host" "$remote_port")"
+  done < <(jq -r '.rules[] | [.id,.listen_host,.listen_port,.remote_host,.remote_port] | @tsv' "$(realm_state_file)")
+}
+realm_delete_rule(){
+  local id candidate
+  realm_list_rules
+  ask '输入要删除的规则 ID（回车/0 返回）：' id
+  cancel_input "$id" && return 0
+  jq -e --arg id "$id" '.rules[] | select(.id==$id)' "$(realm_state_file)" >/dev/null || { red '未找到该规则。'; return 0; }
+  confirm_change "确认删除 Realm 规则 ${id}？" '删除后将停止该端口的 TCP/UDP 转发，并移除脚本创建的 UFW 规则。' || return 0
+  candidate=$(jq --arg id "$id" '.rules |= map(select(.id!=$id))' "$(realm_state_file)")
+  printf '%s\n' "$candidate" | realm_apply_state
+}
+realm_uninstall(){
+  local x dir
+  realm_require_supported || return 0
+  read -r -p '确认卸载 Realm 和全部转发规则（输入 YES；回车/0 返回）：' x
+  [[ "$x" == YES ]] || return 0
+  dir=$(realm_dir)
+  [[ "$dir" == "$STATE_DIR/realm" ]] || { red '拒绝删除异常 Realm 路径。'; return 0; }
+  [[ -f "$(realm_state_file)" ]] && realm_ufw_finalize "$(cat "$(realm_state_file)")" '{"rules":[]}'
+  systemd_stop_disable "$(realm_service_name)"
+  rm -rf "$dir" "/etc/systemd/system/$(realm_service_name)"
+  systemctl daemon-reload 2>/dev/null || true
+  green 'Realm、规则、服务文件和脚本创建的 UFW 规则已删除。'
+}
+realm_menu(){
+  local choice
+  while :; do
+    menu_header 'Realm 端口转发' '主菜单 / Realm 端口转发'
+    dim '仅支持 Debian / Ubuntu；每条规则同时转发 TCP 与 UDP。'
+    menu_item 1 '安装或更新 Realm（官方锁定版）'
+    menu_item 2 '添加端口转发规则'
+    menu_item 3 '查看规则与服务状态'
+    menu_item 4 '删除端口转发规则'
+    menu_item 5 '重启 Realm 服务'
+    menu_item 6 '查看 Realm 日志'
+    menu_item 7 '卸载 Realm 与全部规则'
+    menu_back '返回主菜单'
+    ask '请选择 [0-7]：' choice
+    case "$choice" in
+      1)realm_install;;2)realm_add_rule;;3)realm_list_rules;;4)realm_delete_rule;;
+      5)realm_install_valid && systemd_enable_restart "$(realm_service_name)" || red 'Realm 未安装或重启失败。';;
+      6)journalctl -u "$(realm_service_name)" -n 100 --no-pager;;7)realm_uninstall;;
+      0|'')return 0;;*)red '无效输入。';;
+    esac
+  done
 }
 
 write_services(){
@@ -2464,6 +2721,7 @@ stop_systemd_services(){
   systemd_stop_disable sing-box.service || true
   systemd_stop_disable sing-box-xray.service || true
   systemd_stop_disable sing-box-argo.service || true
+  systemd_stop_disable "$(realm_service_name)" || true
 }
 uninstall(){
   local x fw
@@ -2476,6 +2734,9 @@ uninstall(){
   rc-update del sing-box default 2>/dev/null || true
   rc-update del sing-box-xray default 2>/dev/null || true
   ufw_remove_all_managed
+  if [[ -f "$(realm_state_file)" ]]; then
+    realm_ufw_finalize "$(cat "$(realm_state_file)")" '{"rules":[]}' || true
+  fi
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
     while "$fw" -t nat -C PREROUTING -j SBYG_HY2 2>/dev/null; do "$fw" -t nat -D PREROUTING -j SBYG_HY2 || break; done
@@ -2483,11 +2744,11 @@ uninstall(){
     "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
   done
   rm -f "$(bbr_sysctl_file)" "$(bbr_module_file)"
-  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/systemd/system/sing-box-cert-sync.service /etc/systemd/system/sing-box-cert-sync.timer /etc/init.d/sing-box /etc/init.d/sing-box-xray
+  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/systemd/system/sing-box-cert-sync.service /etc/systemd/system/sing-box-cert-sync.timer "/etc/systemd/system/$(realm_service_name)" /etc/init.d/sing-box /etc/init.d/sing-box-xray
   rm -f /etc/periodic/6h/sing-box-yg-cert-sync
   rm -f /usr/local/bin/sb
   systemctl daemon-reload 2>/dev/null || true
-  green '卸载完成：服务、状态文件、防火墙跳跃链和 sb 快捷命令已删除。'
+  green '卸载完成：服务、状态文件、Realm、脚本创建的防火墙规则和 sb 快捷命令已删除。'
   return 0
 }
 
@@ -2529,8 +2790,9 @@ main(){
     menu_item 9 'TCP / BBR 管理'
     menu_item 10 'WARP-plus'
     menu_item 11 '卸载'
+    menu_item 12 'Realm 端口转发（Debian / Ubuntu）'
     menu_back '退出'
-    ask '请选择 [0-11]：' m
+    ask '请选择 [0-12]：' m
     case "$m" in
       1) [[ -f "$STATE_FILE" ]] && red '当前已安装，请进入“配置、节点与订阅”管理。' || install_flow;;
       2) require_install && configure_menu;;
@@ -2547,6 +2809,7 @@ main(){
       9) bbr;;
       10) require_install && install_sbwpph;;
       11) if uninstall; then exit 0; fi;;
+      12) realm_menu;;
       0) exit 0;;
       *) red '无效输入。';;
     esac

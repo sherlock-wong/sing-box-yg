@@ -1,3 +1,11 @@
+v26.7.25-fork.17 更新内容：
+
+VPS fork：移除全部 Serv00/Hostuno、保活网页和相关 GitHub Actions 文件。新增仅 Debian/Ubuntu 的 Realm 端口转发管理：官方 Realm v2.9.4 二进制与 SHA256 锁定，支持安装、TCP+UDP 转发规则增删、UFW 同步、systemd 状态/日志/重启与完整卸载；规则使用独立状态文件并在重启失败时回滚。
+
+v26.7.25-fork.16 更新内容：
+
+VPS fork：Reality 扫描新增推荐/可用/不可三级结果，AnyTLS 固定官方默认 Padding 并支持格式校验后的自定义方案；证书库增加受管源文件自动同步、系统定时检查和原子回滚。
+
 v26.7.25-fork.15 更新内容：
 
 VPS fork：Reality 全量扫描恢复为表头在上、每个目标一行的固定宽度表格；过长的域名、ALPN、密钥交换和证书名会安全截断，避免破坏后续列。不可选目标仍会在下一行展示失败原因。
