@@ -6,10 +6,10 @@
 
 使用受支持的 Debian、Ubuntu、RHEL 系或 Alpine 系统，并以 `root` 运行。VPS 控制台防火墙/安全组应放行实际启用协议的 TCP/UDP 端口；Reality、Vmess、AnyTLS 使用 TCP，Hysteria2 使用 UDP。服务一直监听 `::`；分享链接的对外地址是独立设置。
 
-推荐安装稳定版 `v0.0.2`：
+推荐安装稳定版 `v0.0.4`：
 
 ```bash
-SBYG_CHANNEL=v0.0.2 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.2/sb.sh)
+SBYG_CHANNEL=v0.0.4 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.4/sb.sh)
 ```
 
 `main` 用于继续开发和测试最新改动：
@@ -18,7 +18,7 @@ SBYG_CHANNEL=v0.0.2 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock
 SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
 ```
 
-`SBYG_CHANNEL` 会让安装过程中需要的校验文件和 fork 内辅助文件继续从同一个标签或分支下载。脚本会把成功安装或更新的渠道保存到 `/etc/s-box/channel`，以后直接运行 `sb` 仍使用该渠道；旧安装没有渠道文件时自动采用 `main`。主菜单顶部会显示当前渠道，选项 `5 更新管理` 会在下载前显示目标渠道和地址；当前 `main` 可切换到稳定版 `v0.0.2`、开发版 `main` 或其他分支/标签。`v0.0.1` 和 `v0.0.2` 都是不会移动的历史快照。
+`SBYG_CHANNEL` 会让安装过程中需要的校验文件和 fork 内辅助文件继续从同一个标签或分支下载。脚本会把成功安装或更新的渠道保存到 `/etc/s-box/channel`，以后直接运行 `sb` 仍使用该渠道；旧安装没有渠道文件时自动采用 `main`。主菜单顶部会显示当前渠道，选项 `5 更新管理` 会在下载前显示目标渠道和地址；当前 `main` 可切换到稳定版 `v0.0.4`、开发版 `main` 或其他分支/标签。历史标签都是不会移动的快照。
 
 安装时输入协议编号的逗号分隔列表。例如 `1,3,4` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。选择 Vless-Reality 后，开发版 `main` 会继续询问使用 Sing-box 还是 Xray-core 服务端。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 Sing-box `1.10.7` 时不显示 AnyTLS，输入 `4` 会被拒绝。VPS fork 已移除 TUIC v5。
 
@@ -38,13 +38,13 @@ SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 1. `sb → 2 → 2`，选择协议后用“启用/停用”在安装后增删协议。
 2. 在同一协议菜单用“名称”“端口”“凭据”修改节点名、监听端口和 UUID/密码。
-3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”不再把候选域名写死在脚本中：安装时会校验并部署仓库的 [`assets/reality-targets.txt`](assets/reality-targets.txt) 到 VPS 的 `/etc/s-box/reality-targets.txt`，扫描时逐行读取。Reality SNI 菜单会清楚标示候选清单是“当前渠道默认清单”还是“本机自定义或旧清单”，避免把旧的本机文件误当作已更新的默认项。你可先通过 `sb → 2 → 管理协议 → Vless → Reality SNI → 3` 查看路径，再以“一行一个域名”（可用 `#` 添加注释）的形式维护本机清单；空行和重复项会自动忽略，无效域名会被拒绝，原配置不会改变。每次扫描会以“表头在上、每个域名一行”的固定宽度表格展示清单的全部结果；域名、密钥交换和证书名过长时会截断为 `...`，不可选项在下一行显示原因。“可选”必须同时通过受信证书/SNI、TLS 1.3、HTTP/2（h2）、X25519 系列密钥交换和至少 2/3 次 TLS 握手，未通过的条目不可选择。延迟按 `DNS + TCP + TLS 握手完成` 计时，不再包含 OpenSSL 进程退出和连接关闭时间；可选目标按成功次数、平均握手延迟及抖动排序。也可以单独扫描自定义域名。菜单选项 `4` 可从当前渠道重新下载并校验仓库清单，但会覆盖本机手工编辑的文件。
+3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”不再把候选域名写死在脚本中：安装时会校验并部署仓库的 [`assets/reality-targets.txt`](assets/reality-targets.txt) 到 VPS 的 `/etc/s-box/reality-targets.txt`，扫描时逐行读取。Reality SNI 菜单会清楚标示候选清单是“当前渠道默认清单”还是“本机自定义或旧清单”，避免把旧的本机文件误当作已更新的默认项。你可先通过 `sb → 2 → 管理协议 → Vless → Reality SNI → 3` 查看路径，再以“一行一个域名”（可用 `#` 添加注释）的形式维护本机清单；空行和重复项会自动忽略，无效域名会被拒绝，原配置不会改变。每次扫描会以“表头在上、每个域名一行”的固定宽度表格展示清单的全部结果；域名、密钥交换和证书名过长时会截断为 `...`。结果分三级：**推荐**同时通过受信证书/SNI、TLS 1.3、HTTP/2（h2）、X25519 系列密钥交换和至少 2/3 次 TLS 握手；**可用**表示基础 TLS 与证书校验通过但缺少推荐条件，选择时会二次确认；**不可**不能选择并显示原因。延迟按 `DNS + TCP + TLS 握手完成` 计时，不再包含 OpenSSL 进程退出和连接关闭时间；结果按等级、成功次数、平均握手延迟及抖动排序。也可以单独扫描自定义域名。菜单选项 `4` 可从当前渠道重新下载并校验仓库清单，但会覆盖本机手工编辑的文件。
 
 Go 迁移采用兼容式渐进方案：`sb` 仍是既有的安装和菜单入口，因此不会让当前 VPS 因语言迁移而失效；仓库新增 `cmd/sbyg` 和 `internal/reality`，将候选清单解析、TLS 探测、并发扫描和排序拆为可单测的 Go 模块，并由 CI 构建 Linux `amd64`/`arm64` 二进制。后续会按相同边界迁移状态读写、配置渲染和事务应用；在 Go 发布包加入锁定清单前，生产脚本仍使用已验证的 Shell 扫描器，避免为了迁移而引入未经校验的动态二进制下载。
 4. 开发版 `main` 的 Vless 专项参数还可在 Sing-box 与 Xray-core 之间切换。Xray 发布包及其官方 `.dgst` 摘要会分别校验；服务使用独立的 `sing-box-xray` 单元，不会覆盖系统已有的通用 `xray.service`。切换保留端口、UUID、Reality 密钥和分享链接，事务失败会恢复原内核服务。Xray 参数向导提供指纹、SpiderX、最大时间差、ML-DSA-65 和非认证回落限速选项：长密钥由 Xray 自动生成，SpiderX 可自动生成，枚举参数只需选择。启用 ML-DSA-65 前，脚本会运行 `xray tls ping`，仅在目标证书链大于 3500 bytes 且支持 X25519MLKEM768 时继续；它不影响未启用验证的旧客户端，分享链接会增加 `pqv`，支持该字段的 Xray/v2rayN 客户端会验证额外签名。
 5. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
 6. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
-7. `sb → 2 → 6` 是多证书管理。证书库可以保存多组证书和私钥，Vmess、Hy2、AnyTLS 各自记录独立的证书绑定。选项 `4` 是域名证书向导：选择协议或全部协议，再填写证书域名。脚本先检查证书库以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；没有证书时可运行锁定版 ACME 或手动指定已有证书。验证成功后会复制到 `/etc/s-box/certificates/<证书ID>/`，加入证书库并自动绑定。选项 `5` 可随时为某个协议改选证书；如果新证书不覆盖当前 SNI，脚本会要求同时填写该证书覆盖的新域名。
+7. `sb → 2 → 6` 是多证书管理。证书库可以保存多组证书和私钥，Vmess、Hy2、AnyTLS 各自记录独立的证书绑定。选项 `4` 是域名证书向导：选择协议或全部协议，再填写证书域名。脚本先检查证书库以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；没有证书时可运行锁定版 ACME 或手动指定已有证书。验证成功后会复制到 `/etc/s-box/certificates/<证书ID>/`，加入证书库并自动绑定。导入时可以选择跟踪原始 cert/key 文件；脚本保留运行时托管副本，避免续期工具直接改动正在使用的路径。选项 `5` 可随时为某个协议改选证书；如果新证书不覆盖当前 SNI，脚本会要求同时填写该证书覆盖的新域名。
 
 配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
 
@@ -54,6 +54,8 @@ AnyTLS 和 Hysteria2 使用普通 TLS：SNI 应与该协议绑定证书的实际
 
 推荐为 AnyTLS 准备独立域名，例如 `anytls.example.com`。域名托管在 Cloudflare 时，A/AAAA 记录必须保持“仅 DNS（灰云）”；普通小黄云代理的是 HTTP/HTTPS，不能透传 AnyTLS 的原始 TCP。可以使用 Cloudflare DNS 验证签发 ACME 证书，DNS 托管和小黄云代理是两回事。
 
+AnyTLS 默认写入官方推荐的 `padding_scheme`，并把该默认值显式固定在状态文件中。需要与既有客户端实验性参数对齐时，可从 `sb → 2 → 管理协议 → AnyTLS → Padding` 逐行录入自定义规则；脚本会校验 `stop=N`、包序号、区间和重复项，非法方案不会写入配置。除非明确知道对端兼容性，不建议改动默认方案。
+
 证书管理提供两种客户端校验模式：
 
 1. **系统 CA 验证（推荐）**：适合 Let's Encrypt 等公开受信的 ACME 证书。分享链接不生成 `insecure=1` 或固定值，Sing-box 和 Mihomo 客户端均执行正常证书链与域名验证。ACME 续期不要求客户端重新导入订阅。
@@ -61,7 +63,7 @@ AnyTLS 和 Hysteria2 使用普通 TLS：SNI 应与该协议绑定证书的实际
 
 新安装的备用自签证书包含匹配的 SAN、`CA:FALSE`、服务端 KeyUsage，并默认进入固定模式，不再给 AnyTLS 分享链接输出仅有 `insecure=1` 的配置。已有状态文件若缺少 `certificate.mode`，下次应用时会根据原来的 `insecure` 值迁移：`true` 迁移为 `pinned`，`false` 迁移为 `trusted`。固定值无法计算时脚本拒绝生成不安全的客户端配置并回滚本次状态修改。
 
-从自签切换 AnyTLS 域名证书时，推荐使用 `sb → 2 → 6 → 4 → 3 AnyTLS`（主菜单 `7` 也会进入同一向导）。脚本会检查证书可读性、有效期、公私钥匹配和域名覆盖，再把证书库条目、AnyTLS 域名和证书绑定作为同一次事务写入；随后执行 JSON 与 `sing-box check`、重启并重新生成订阅。Vmess、Hy2 和 AnyTLS 可以分别使用不同证书，也可以在向导中选择“全部协议”共用一张多 SAN 证书。任何检查、申请、配置校验或重启失败，原证书绑定和运行配置都会保留。切换成功后应在客户端重新导入最新订阅/分享链接。ACME 续期后客户端不需要更新指纹，但证书库使用托管副本时需要重跑对应域名向导，把续期后的文件同步进证书库。
+从自签切换 AnyTLS 域名证书时，推荐使用 `sb → 2 → 6 → 4 → 3 AnyTLS`（主菜单 `7` 也会进入同一向导）。脚本会检查证书可读性、有效期、公私钥匹配和域名覆盖，再把证书库条目、AnyTLS 域名和证书绑定作为同一次事务写入；随后执行 JSON 与 `sing-box check`、重启并重新生成订阅。Vmess、Hy2 和 AnyTLS 可以分别使用不同证书，也可以在向导中选择“全部协议”共用一张多 SAN 证书。任何检查、申请、配置校验或重启失败，原证书绑定和运行配置都会保留。切换成功后应在客户端重新导入最新订阅/分享链接。对选择了“跟踪源文件”的受管证书，systemd VPS 会每 6 小时（含随机延迟）检查一次；也可通过 `sb → 2 → 6 → 6` 立即同步、选项 `7` 开关自动同步。同步会先验证新证书有效期、公私钥、所有正在绑定的域名和两套内核配置，随后原子替换托管副本、更新固定证书订阅参数并重启；任一步失败都会恢复旧证书和服务。此同步器不会自行运行 ACME 或联网申请证书，只处理你已配置的本地续期源文件。
 
 ## 运维与故障处理
 

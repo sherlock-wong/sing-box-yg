@@ -108,7 +108,7 @@ saved_update_script=$(declare -f update_script)
 selected_update_channel=
 update_script(){ selected_update_channel=$FORK_BRANCH; }
 update_menu <<<"2"
-[[ "$selected_update_channel" == v0.0.2 ]]
+[[ "$selected_update_channel" == v0.0.4 ]]
 set_channel main
 update_menu <<< $'4\nfeature/next'
 [[ "$selected_update_channel" == feature/next ]]
@@ -241,6 +241,16 @@ bad_xray_version=$(jq '.xray_core="latest"' <<<"$four_state")
 ! validate_state "$bad_xray_version"
 bad_mldsa_pair=$(jq '.protocols.vless.xray.mldsa65_seed="seed" | .protocols.vless.xray.mldsa65_verify=""' <<<"$four_state")
 ! validate_state "$bad_mldsa_pair"
+bad_cert_source=$(jq '.certificates.default.source={type:"files",auto_sync:true}' <<<"$four_state")
+! validate_state "$bad_cert_source"
+anytls_padding_valid default
+anytls_padding_valid custom 'stop=3' '0=10-20' '1=20-40,c' '2=1-1'
+! anytls_padding_valid custom 'stop=2' '2=1-1'
+! anytls_padding_valid custom 'stop=2' '0=20-10'
+custom_padding=$(jq '.protocols.anytls.padding={mode:"custom",lines:["stop=2","0=10-20","1=1-1,c"]}' <<<"$four_state")
+validate_state "$custom_padding"
+bad_padding=$(jq '.protocols.anytls.padding={mode:"custom",lines:["stop=2","0=10-20","0=1-1"]}' <<<"$four_state")
+! validate_state "$bad_padding"
 
 # Schema 1 states migrate the global certificate into the library and remove TUIC completely.
 schema1_state=$(jq '
@@ -249,7 +259,7 @@ schema1_state=$(jq '
 ' <<<"$four_state")
 migrated_state=$(normalize_state <<<"$schema1_state")
 jq -e '
-  .schema==3 and (.protocols|has("tuic")|not) and
+  .schema==4 and (.protocols|has("tuic")|not) and
   .protocols.vless.engine=="sing-box" and .xray_core=="26.3.27" and
   .protocols.vmess.certificate_id=="default" and
   .protocols.hy2.certificate_id=="default" and
@@ -402,7 +412,7 @@ timeout(){
   printf 'subject=CN = binary.example\0binary\nALPN protocol: h2\nVerify return code: 0 (ok)\n'
 }
 probe_metadata=$(probe_reality_metadata binary.example)
-[[ "$probe_metadata" == $'1\t-\t1.3\th2\tX25519\tbinary.example' ]]
+[[ "$probe_metadata" == $'2\t满足严格推荐条件\t1.3\th2\tX25519\tbinary.example' ]]
 unset -f timeout
 curl(){ printf '0.013000'; }
 [[ $(probe_reality_once fast.example 1) == 13 ]]
@@ -420,7 +430,7 @@ probe_reality_once(){
 }
 probe_reality_metadata(){
   case "$1" in
-    fast.example|slow.example|flaky.example) printf '1\t-\t1.3\th2\tX25519\t%s\n' "$1";;
+    fast.example|slow.example|flaky.example) printf '2\t满足严格推荐条件\t1.3\th2\tX25519\t%s\n' "$1";;
     *) printf '0\tTLS 1.3 握手失败或证书不受信\t-\t-\t-\t-\n';;
   esac
 }
@@ -437,8 +447,8 @@ saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
 captured_state=
 apply_state(){ captured_state=$1; }
 scan_reality_candidates(){
-  printf 'www.cloudflare.com\t1\t通过严格兼容性与稳定性检测\t3\t42\t6\t1.3\th2\tX25519MLKEM768\twww.cloudflare.com\n'
-  printf 'www.microsoft.com\t1\t通过严格兼容性与稳定性检测\t3\t55\t9\t1.3\th2\tX25519\twww.microsoft.com\n'
+  printf 'www.cloudflare.com\t2\t通过严格兼容性与稳定性检测\t3\t42\t6\t1.3\th2\tX25519MLKEM768\twww.cloudflare.com\n'
+  printf 'www.microsoft.com\t2\t通过严格兼容性与稳定性检测\t3\t55\t9\t1.3\th2\tX25519\twww.microsoft.com\n'
 }
 set_reality_sni <<< $'1\n1'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
@@ -458,7 +468,7 @@ apply_state(){ captured_state=$1; }
 scan_reality_candidates(){
   local n
   for n in {1..10}; do
-    printf 'target%s.example\t1\t通过严格兼容性与稳定性检测\t3\t%s\t1\t1.3\th2\tX25519\ttarget%s.example\n' "$n" "$((20 + n))" "$n"
+    printf 'target%s.example\t2\t通过严格兼容性与稳定性检测\t3\t%s\t1\t1.3\th2\tX25519\ttarget%s.example\n' "$n" "$((20 + n))" "$n"
   done
 }
 set_reality_sni <<< $'1\n10'
@@ -520,8 +530,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=hy2.example.com' -a
 cert_state=$(jq --arg cert "$STATE_DIR/trusted.pem" --arg key "$STATE_DIR/trusted.key" \
   --arg hy2cert "$STATE_DIR/hy2.pem" --arg hy2key "$STATE_DIR/hy2.key" '
    .public_address="node.example.com" |
-   .certificates.tls={name:"tls.example.com",cert:$cert,key:$key,mode:"trusted",insecure:false} |
-   .certificates.hy2={name:"hy2.example.com",cert:$hy2cert,key:$hy2key,mode:"trusted",insecure:false} |
+   .certificates.tls={name:"tls.example.com",cert:$cert,key:$key,mode:"trusted",insecure:false,
+     source:{type:"snapshot",auto_sync:false}} |
+   .certificates.hy2={name:"hy2.example.com",cert:$hy2cert,key:$hy2key,mode:"trusted",insecure:false,
+     source:{type:"snapshot",auto_sync:false}} |
    .protocols.vmess.domain="tls.example.com" | .protocols.vmess.certificate_id="tls" |
    .protocols.hy2.domain="hy2.example.com" | .protocols.hy2.certificate_id="hy2" |
    .protocols.anytls.domain="tls.example.com" | .protocols.anytls.certificate_id="tls"
@@ -577,6 +589,41 @@ managed_key=$(jq -r '.certificates[.protocols.anytls.certificate_id].key' "$boun
 [[ -r "$managed_cert" && -r "$managed_key" && "$managed_cert" == "$STATE_DIR"/certificates/*/cert.pem ]]
 eval "$saved_commit_state"
 eval "$saved_certificate_matches_domain"
+
+# Managed certificate synchronization validates the renewed source before an
+# atomic replacement, then regenerates subscriptions and restarts the core.
+set_case_dir certificate-sync
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+saved_sync_certificate_matches_domain=$(declare -f certificate_matches_domain)
+certificate_matches_domain(){ return 0; }
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=sync.example.com' -addext 'subjectAltName=DNS:sync.example.com' \
+  -keyout "$STATE_DIR/source-old.key" -out "$STATE_DIR/source-old.pem" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=sync.example.com' -addext 'subjectAltName=DNS:sync.example.com' \
+  -keyout "$STATE_DIR/source-new.key" -out "$STATE_DIR/source-new.pem" >/dev/null 2>&1
+install -d -m 700 "$STATE_DIR/certificates/sync"
+install -m 644 "$STATE_DIR/source-old.pem" "$STATE_DIR/certificates/sync/cert.pem"
+install -m 600 "$STATE_DIR/source-old.key" "$STATE_DIR/certificates/sync/private.key"
+sync_cert_state=$(make_state 1.13.14 "$CORE_DEFAULT")
+sync_cert_state=$(jq --arg cert "$STATE_DIR/certificates/sync/cert.pem" --arg key "$STATE_DIR/certificates/sync/private.key" \
+  --arg source_cert "$STATE_DIR/source-new.pem" --arg source_key "$STATE_DIR/source-new.key" '
+  .public_address="node.example.com" |
+  .protocols.vless.enabled=false | .protocols.vmess.enabled=false | .protocols.hy2.enabled=false |
+  .protocols.anytls.enabled=true | .protocols.anytls.port=28123 |
+  .protocols.anytls.domain="sync.example.com" | .protocols.anytls.certificate_id="sync" |
+  .certificates.sync={name:"sync.example.com",cert:$cert,key:$key,mode:"trusted",insecure:false,
+    source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:true}}
+' <<<"$sync_cert_state")
+printf '%s\n' "$sync_cert_state" > "$STATE_FILE"
+old_sync_der=$(certificate_der_sha256 "$STATE_DIR/certificates/sync/cert.pem")
+new_sync_der=$(certificate_der_sha256 "$STATE_DIR/source-new.pem")
+saved_reconcile_core_services=$(declare -f reconcile_core_services)
+sync_restart_calls=0
+reconcile_core_services(){ sync_restart_calls=$((sync_restart_calls + 1)); }
+sync_managed_certificates true
+[[ $(certificate_der_sha256 "$STATE_DIR/certificates/sync/cert.pem") == "$new_sync_der" && "$old_sync_der" != "$new_sync_der" ]]
+[[ $sync_restart_calls -eq 1 ]]
+eval "$saved_reconcile_core_services"
+eval "$saved_sync_certificate_matches_domain"
 
 # Subscription/config output follows runtime disable.
 set_case_dir sync

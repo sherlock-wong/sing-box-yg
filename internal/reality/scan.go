@@ -21,6 +21,8 @@ type Result struct {
 	TLSVersion  string `json:"tls_version"`
 	ALPN        string `json:"alpn"`
 	Certificate string `json:"certificate"`
+	Grade       int    `json:"grade"`
+	Reason      string `json:"reason"`
 }
 
 type sample struct {
@@ -34,8 +36,8 @@ func Scan(ctx context.Context, targets []string, samples, top int) ([]Result, er
 	if samples < 1 {
 		return nil, fmt.Errorf("samples must be positive")
 	}
-	if top < 1 {
-		return nil, fmt.Errorf("top must be positive")
+	if top < 0 {
+		return nil, fmt.Errorf("top must not be negative")
 	}
 
 	results := make(chan Result, len(targets))
@@ -45,9 +47,7 @@ func Scan(ctx context.Context, targets []string, samples, top int) ([]Result, er
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			if result, ok := scanTarget(ctx, target, samples); ok {
-				results <- result
-			}
+			results <- scanTarget(ctx, target, samples)
 		}()
 	}
 	group.Wait()
@@ -58,6 +58,9 @@ func Scan(ctx context.Context, targets []string, samples, top int) ([]Result, er
 		ordered = append(ordered, result)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Grade != ordered[j].Grade {
+			return ordered[i].Grade > ordered[j].Grade
+		}
 		if ordered[i].Successes != ordered[j].Successes {
 			return ordered[i].Successes > ordered[j].Successes
 		}
@@ -66,18 +69,21 @@ func Scan(ctx context.Context, targets []string, samples, top int) ([]Result, er
 		}
 		return ordered[i].JitterMS < ordered[j].JitterMS
 	})
-	if len(ordered) > top {
+	if top > 0 && len(ordered) > top {
 		ordered = ordered[:top]
 	}
 	return ordered, nil
 }
 
-func scanTarget(ctx context.Context, host string, samples int) (Result, bool) {
+func scanTarget(ctx context.Context, host string, samples int) Result {
 	result := Result{Host: host, Samples: samples}
 	var total time.Duration
 	var minimum, maximum time.Duration
 	for attempt := 0; attempt < samples; attempt++ {
-		measurement, err := probe(ctx, host)
+		measurement, err := probe(ctx, host, true)
+		if err != nil {
+			measurement, err = probe(ctx, host, false)
+		}
 		if err != nil {
 			continue
 		}
@@ -97,14 +103,25 @@ func scanTarget(ctx context.Context, host string, samples int) (Result, bool) {
 		total += measurement.latency
 	}
 	if result.Successes < max(1, samples-1) {
-		return Result{}, false
+		result.Reason = fmt.Sprintf("TLS 握手稳定性不足（%d/%d）", result.Successes, samples)
+		return result
 	}
 	result.AverageMS = total.Milliseconds() / int64(result.Successes)
 	result.JitterMS = (maximum - minimum).Milliseconds()
-	return result, true
+	if result.TLSVersion == "1.3" && result.ALPN == "h2" {
+		// crypto/tls does not expose the negotiated key-exchange group. The
+		// production shell scanner checks X25519 with OpenSSL before allowing
+		// a target; this result is a preliminary recommendation only.
+		result.Grade = 1
+		result.Reason = "TLS 1.3 / h2 可用；使用前仍需检查 X25519"
+	} else {
+		result.Grade = 1
+		result.Reason = "基础 TLS 可用，但未满足 TLS 1.3 / h2 推荐条件"
+	}
+	return result
 }
 
-func probe(ctx context.Context, host string) (sample, error) {
+func probe(ctx context.Context, host string, strict bool) (sample, error) {
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
 	started := time.Now()
 	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, "443"))
@@ -120,25 +137,29 @@ func probe(ctx context.Context, host string) (sample, error) {
 		return sample{}, err
 	}
 
-	connection := tls.Client(raw, &tls.Config{
+	config := &tls.Config{
 		ServerName: host,
-		MinVersion: tls.VersionTLS13,
 		NextProtos: []string{"h2", "http/1.1"},
-	})
+	}
+	if strict {
+		config.MinVersion = tls.VersionTLS13
+		config.MaxVersion = tls.VersionTLS13
+	}
+	connection := tls.Client(raw, config)
 	defer connection.Close()
 	if err := connection.HandshakeContext(ctx); err != nil {
 		return sample{}, err
 	}
 	state := connection.ConnectionState()
-	if state.Version != tls.VersionTLS13 || state.NegotiatedProtocol != "h2" {
-		return sample{}, fmt.Errorf("target lacks required TLS 1.3 / HTTP2 profile")
-	}
 	return sample{latency: time.Since(started), state: state}, nil
 }
 
 func tlsVersion(version uint16) string {
 	if version == tls.VersionTLS13 {
 		return "1.3"
+	}
+	if version == tls.VersionTLS12 {
+		return "1.2"
 	}
 	return "unknown"
 }

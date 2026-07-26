@@ -33,7 +33,7 @@ func realityScan(arguments []string) {
 	flags := flag.NewFlagSet("reality-scan", flag.ExitOnError)
 	targetsPath := flags.String("targets-file", "/etc/s-box/reality-targets.txt", "target hostname file")
 	samples := flags.Int("samples", 3, "samples per target")
-	top := flags.Int("top", 10, "number of ranked results")
+	top := flags.Int("top", 0, "number of ranked results (0 shows all)")
 	timeout := flags.Duration("timeout", 35*time.Second, "whole scan timeout")
 	flags.Parse(arguments)
 

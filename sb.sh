@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.15'
+SCRIPT_VERSION='v26.7.25-fork.16'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -41,6 +41,7 @@ METACUBEX_GEOSITE_ASSET=488939110
 METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa
 REALITY_SCAN_SAMPLES=3
 REALITY_TARGETS_SHA256=eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda
+ANYTLS_DEFAULT_PADDING='["stop=8","0=30-30","1=100-400","2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000","3=9-9,500-1000","4=500-1000","5=500-1000","6=500-1000","7=500-1000"]'
 
 red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
@@ -106,7 +107,7 @@ confirm_change(){
   [[ "$x" == 1 ]]
 }
 load_channel
-normalize_state(){ # schema 1/2 -> schema 3/per-protocol engine
+normalize_state(){ # schema 1/2/3 -> schema 4/per-protocol engine, padding and certificate sources
   jq --arg xray "$XRAY_DEFAULT" '
     if .schema == 1 then
       .certificates = {
@@ -134,8 +135,12 @@ normalize_state(){ # schema 1/2 -> schema 3/per-protocol engine
       mldsa65_seed:"", mldsa65_verify:"",
       fallback_profile:"off"
     } * (.protocols.vless.xray // {})) |
+    .protocols.anytls.padding = ({mode:"default",lines:[]} * (.protocols.anytls.padding // {})) |
+    .certificates |= with_entries(
+      .value.source = (.value.source // {type:"snapshot",auto_sync:false})
+    ) |
     .xray_core = (.xray_core // $xray) |
-    .schema=3
+    .schema=4
   '
 }
 certificate_id_for_tag(){ jq -r --arg t "$1" '.protocols[$t].certificate_id' "$STATE_FILE"; }
@@ -194,6 +199,43 @@ valid_host(){
   fi
 }
 valid_uuid(){ [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; }
+anytls_padding_valid(){ # mode [line...]
+  local mode=$1 line key rhs token low high stop= seen=$'\n'
+  shift
+  [[ "$mode" == default ]] && return 0
+  [[ "$mode" == custom && $# -ge 2 ]] || return 1
+  for line in "$@"; do
+    [[ -n "$line" && "$line" != *[[:space:]]* ]] || return 1
+    if [[ "$line" =~ ^stop=([1-9][0-9]*)$ ]]; then
+      [[ -z "$stop" ]] || return 1
+      stop=${BASH_REMATCH[1]}
+      continue
+    fi
+    [[ "$line" =~ ^([0-9]+)=(.+)$ ]] || return 1
+    key=${BASH_REMATCH[1]}; rhs=${BASH_REMATCH[2]}
+    [[ "$seen" != *$'\n'"$key"$'\n'* ]] || return 1
+    seen+="$key"$'\n'
+    IFS=, read -r -a tokens <<<"$rhs"
+    ((${#tokens[@]})) || return 1
+    for token in "${tokens[@]}"; do
+      [[ "$token" == c ]] && continue
+      [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]] || return 1
+      low=${BASH_REMATCH[1]}; high=${BASH_REMATCH[2]}
+      ((low <= high)) || return 1
+    done
+  done
+  [[ -n "$stop" ]] || return 1
+  for key in ${seen//$'\n'/ }; do ((key < stop)) || return 1; done
+}
+anytls_padding_state_valid(){
+  local state=$1 mode
+  local -a lines=()
+  mode=$(jq -r '.protocols.anytls.padding.mode' <<<"$state")
+  [[ "$mode" == default ]] && { anytls_padding_valid default; return; }
+  while IFS= read -r line; do lines+=("$line"); done < <(jq -r '.protocols.anytls.padding.lines[]' <<<"$state")
+  ((${#lines[@]})) || return 1
+  anytls_padding_valid "$mode" "${lines[@]}"
+}
 port_available(){ ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]$1$"; }
 protocol_label(){ case "$1" in vless) echo Vless-Reality;; vmess) echo Vmess-WS;; hy2) echo Hysteria2;; anytls) echo AnyTLS;; esac; }
 protocol_transport(){ case "$1" in vless|vmess|anytls) echo TCP;; hy2) echo UDP;; esac; }
@@ -529,7 +571,7 @@ new_state(){
     -addext 'extendedKeyUsage=serverAuth' \
     -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
   jq -n --arg core "$core" --arg xray "$XRAY_DEFAULT" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" \
-    '{schema:3,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default"}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true}}}'
+    '{schema:4,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",padding:{mode:"default",lines:[]}}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true,source:{type:"snapshot",auto_sync:false}}}}'
 }
 
 choose_protocol_tags(){ # core -> space-separated tags
@@ -589,7 +631,7 @@ inbound_for(){ # state tag -> JSON object; all listeners remain ::
   vless) jq -c '.protocols.vless as $p | {type:"vless",tag:"vless-sb",listen:"::",listen_port:$p.port,users:[{uuid:$p.uuid,flow:"xtls-rprx-vision"}],tls:{enabled:true,server_name:$p.sni,reality:{enabled:true,handshake:{server:$p.sni,server_port:443},private_key:$p.private_key,short_id:[$p.short_id]}}}' <<<"$s";;
   vmess) jq -c '.protocols.vmess as $p | .certificates[$p.certificate_id] as $c | {type:"vmess",tag:"vmess-sb",listen:"::",listen_port:$p.port,users:[{uuid:$p.uuid,alterId:0}],transport:{type:"ws",path:$p.path},tls:{enabled:$p.tls,server_name:$p.domain,certificate_path:$c.cert,key_path:$c.key}}' <<<"$s";;
   hy2) jq -c '.protocols.hy2 as $p | .certificates[$p.certificate_id] as $c | {type:"hysteria2",tag:"hy2-sb",listen:"::",listen_port:$p.port,users:[{password:$p.password}],ignore_client_bandwidth:false,up_mbps:$p.up_mbps,down_mbps:$p.down_mbps,tls:{enabled:true,alpn:["h3"],server_name:$p.domain,certificate_path:$c.cert,key_path:$c.key}}' <<<"$s";;
-  anytls) jq -c '.protocols.anytls as $p | .certificates[$p.certificate_id] as $c | {type:"anytls",tag:"anytls-sb",listen:"::",listen_port:$p.port,users:[{password:$p.password}],tls:{enabled:true,server_name:$p.domain,certificate_path:$c.cert,key_path:$c.key}}' <<<"$s";; esac
+  anytls) jq -c --argjson default_padding "$ANYTLS_DEFAULT_PADDING" '.protocols.anytls as $p | .certificates[$p.certificate_id] as $c | {type:"anytls",tag:"anytls-sb",listen:"::",listen_port:$p.port,users:[{password:$p.password}],padding_scheme:(if $p.padding.mode=="custom" then $p.padding.lines else $default_padding end),tls:{enabled:true,server_name:$p.domain,certificate_path:$c.cert,key_path:$c.key}}' <<<"$s";; esac
 }
 
 render_config(){ # state output
@@ -639,7 +681,7 @@ render_xray_config(){ # state output
 validate_state(){
   local s=$1 tag p
   jq -e '
-    .schema==3 and
+    .schema==4 and
     (.core|type=="string") and
     (.xray_core|type=="string") and
     (.public_address|type=="string") and
@@ -647,6 +689,12 @@ validate_state(){
     ([.certificates[] |
       (.name|type=="string") and (.cert|type=="string") and (.key|type=="string") and
       (.insecure|type=="boolean") and
+      (.source|type=="object") and
+      (.source.type|IN("snapshot","files")) and
+      (.source.auto_sync|type=="boolean") and
+      (if .source.type=="files" then
+        (.source.cert|type=="string") and (.source.key|type=="string")
+       else true end) and
       ((.mode // (if .insecure then "pinned" else "trusted" end)) as $m |
         ($m=="pinned" or $m=="trusted") and (.insecure == ($m=="pinned")))
     ] | all) and
@@ -673,6 +721,7 @@ validate_state(){
     (.protocols.hy2.up_mbps|type=="number") and (.protocols.hy2.up_mbps>0) and
     (.protocols.hy2.down_mbps|type=="number") and (.protocols.hy2.down_mbps>0)
   ' --argjson certs "$(jq '.certificates' <<<"$s")" <<<"$s" >/dev/null || return 1
+  anytls_padding_state_valid "$s" || return 1
   [[ $(jq -r '.xray_core' <<<"$s") == "$XRAY_DEFAULT" ]] || return 1
   [[ $(jq -r '.core' <<<"$s") != 1.10* ]] || ! jq -e '.protocols.anytls.enabled' <<<"$s" >/dev/null || return 1
   for tag in vless vmess hy2 anytls; do
@@ -848,6 +897,7 @@ commit_state(){ # candidate JSON stdin
   ufw_finalize_candidate "$old_state" "$candidate"
   reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
+  reconcile_certificate_sync_schedule "$candidate" || yellow '证书自动同步计划未能更新；可在证书管理中手动同步。'
   green '配置已通过 JSON、Sing-box 与 Xray（如启用）检查；双内核配置已原子替换并应用。'
 }
 apply_current_state(){
@@ -857,7 +907,7 @@ apply_current_state(){
 ensure_current_state_schema(){
   local normalized supported
   [[ -f "$STATE_FILE" ]] || return 0
-  jq -e '.schema==3 and (.protocols|has("tuic")|not)' "$STATE_FILE" >/dev/null && return 0
+  jq -e '.schema==4 and (.protocols|has("tuic")|not)' "$STATE_FILE" >/dev/null && return 0
   normalized=$(normalize_state < "$STATE_FILE") || return 1
   supported=$(jq '[.protocols[]|select(.enabled)]|length' <<<"$normalized")
   if ((supported == 0)); then
@@ -1394,40 +1444,41 @@ probe_reality_once(){ # host [sample-number] -> DNS + TCP + TLS handshake millis
     print milliseconds
   }'
 }
-probe_reality_metadata(){ # host -> selectable, reason, TLS-version, ALPN, key-exchange, certificate-subject
-  local host=$1 output tls alpn curve cert
+probe_reality_metadata(){ # host -> grade 2=recommended,1=available,0=rejected; reason, TLS, ALPN, key exchange, certificate
+  local host=$1 output tls alpn curve cert reason= grade=0
   output=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-reality.XXXXXX")
-  if ! timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 \
-    -alpn 'h2,http/1.1' -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1; then
-    rm -f "$output"
-    printf '0\tTLS 1.3 握手失败或证书不受信\t-\t-\t-\t-\n'
-    return 0
-  fi
+  # Try TLS 1.3 first for the recommended profile, then a verified generic TLS
+  # handshake so older but otherwise usable targets are not incorrectly hidden.
+  timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 \
+    -alpn 'h2,http/1.1' -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1 ||
+    timeout 8 openssl s_client -connect "${host}:443" -servername "$host" \
+      -alpn 'h2,http/1.1' -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1 || true
   tr -d '\000' < "$output" > "$output.text" && mv "$output.text" "$output"
   if ! grep -aq 'Verify return code: 0 (ok)' "$output"; then
     rm -f "$output"
-    printf '0\t证书验证失败或不匹配 SNI\t-\t-\t-\t-\n'
+    printf '0\tTLS 握手失败、证书不受信或不匹配 SNI\t-\t-\t-\t-\n'
     return 0
   fi
   tls=$(sed -n 's/^New, TLSv\([^,]*\),.*/\1/p' "$output" | head -n1)
   alpn=$(sed -n 's/^ALPN protocol: //p' "$output" | head -n1)
   curve=$(sed -n 's/^Server Temp Key: \([^,]*\).*/\1/p' "$output" | head -n1)
   cert=$(sed -n 's/^subject=.*CN *= *\([^,]*\).*/\1/p' "$output" | head -n1)
-  if [[ "$tls" != 1.3 ]]; then
-    rm -f "$output"; printf '0\t未协商 TLS 1.3\t%s\t%s\t%s\t%s\n' "${tls:--}" "${alpn:--}" "${curve:--}" "${cert:--}"; return 0
-  fi
-  if [[ "$alpn" != h2 ]]; then
-    rm -f "$output"; printf '0\t未协商 HTTP/2（h2）\t%s\t%s\t%s\t%s\n' "$tls" "${alpn:--}" "${curve:--}" "${cert:--}"; return 0
-  fi
-  if [[ "$curve" != X25519* ]]; then
-    rm -f "$output"; printf '0\t未提供 X25519 系列密钥交换\t%s\t%s\t%s\t%s\n' "$tls" "$alpn" "${curve:--}" "${cert:--}"; return 0
-  fi
   [[ -n "$cert" ]] || cert=$host
+  if [[ "$tls" == 1.3 && "$alpn" == h2 && "$curve" == X25519* ]]; then
+    grade=2; reason='满足严格推荐条件'
+  else
+    reason='基础 TLS 可用，但'
+    [[ "$tls" == 1.3 ]] || reason+='未协商 TLS 1.3、'
+    [[ "$alpn" == h2 ]] || reason+='未协商 h2、'
+    [[ "$curve" == X25519* ]] || reason+='未提供 X25519 系列密钥交换、'
+    reason=${reason%,}
+    grade=1
+  fi
   rm -f "$output"
-  printf '1\t-\t%s\t%s\t%s\t%s\n' "$tls" "$alpn" "$curve" "$cert"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$grade" "$reason" "${tls:--}" "${alpn:--}" "${curve:--}" "$cert"
 }
-scan_reality_candidates(){ # outputs host, selectable, reason, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
-  local work host file sample latency metadata selectable reason tls alpn curve cert successes total min max avg jitter configured
+scan_reality_candidates(){ # outputs host, grade, reason, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
+  local work host file sample latency metadata grade reason tls alpn curve cert successes total min max avg jitter configured
   local -a candidates=("$@") pids=()
   if ((${#candidates[@]} == 0)); then
     configured=$(reality_target_candidates) || return 1
@@ -1440,8 +1491,8 @@ scan_reality_candidates(){ # outputs host, selectable, reason, successes, averag
     file="$work/$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_').result"
     (
       metadata=$(probe_reality_metadata "$host") || metadata=$'0\t探测程序异常\t-\t-\t-\t-'
-      IFS=$'\t' read -r selectable reason tls alpn curve cert <<<"$metadata"
-      if [[ "$selectable" != 1 ]]; then
+      IFS=$'\t' read -r grade reason tls alpn curve cert <<<"$metadata"
+      if [[ "$grade" == 0 ]]; then
         printf '%s\t0\t%s\t0\t999999\t999999\t%s\t%s\t%s\t%s\n' \
           "$host" "$reason" "$tls" "$alpn" "$curve" "$cert" > "$file"
         exit 0
@@ -1460,42 +1511,44 @@ scan_reality_candidates(){ # outputs host, selectable, reason, successes, averag
         avg=999999; jitter=999999
       fi
       if ((successes >= REALITY_SCAN_SAMPLES - 1)); then
-        selectable=1; reason='通过严格兼容性与稳定性检测'
+        [[ "$grade" == 2 ]] && reason='满足严格推荐条件与稳定性检测' || reason="${reason}；握手稳定"
       else
-        selectable=0; reason="TLS 握手稳定性不足（${successes}/${REALITY_SCAN_SAMPLES}）"
+        grade=0; reason="TLS 握手稳定性不足（${successes}/${REALITY_SCAN_SAMPLES}）"
       fi
       printf '%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
-        "$host" "$selectable" "$reason" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
+        "$host" "$grade" "$reason" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
     ) &
     pids+=("$!")
   done
   for sample in "${pids[@]}"; do wait "$sample" || true; done
-  # Show every configured target. Selectable targets sort first by stability, latency and jitter.
+  # Show every configured target. Recommended targets sort first, then usable ones.
   sort -t $'\t' -k2,2nr -k4,4nr -k5,5n -k6,6n "$work"/*.result
 }
 choose_scanned_reality_sni(){
-  local results choice i host selectable reason successes avg jitter tls alpn curve cert candidate target_cell alpn_cell curve_cell cert_cell avg_cell jitter_cell success_cell
+  local results choice i host grade reason successes avg jitter tls alpn curve cert candidate target_cell alpn_cell curve_cell cert_cell avg_cell jitter_cell success_cell status
   local -a rows=()
   reality_targets_are_current || yellow '当前扫描使用的是本机自定义或旧候选清单；如需恢复当前渠道默认项，请返回并选择 4。'
   results=$(scan_reality_candidates) || true
   [[ -n "$results" ]] || { red '候选清单为空或扫描未产生结果，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
   menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
-  dim '展示全部候选。仅“可选”项同时通过：受信证书/SNI、TLS 1.3、h2、X25519 系列，以及至少 2/3 次握手。'
-  dim '延迟为 DNS + TCP + TLS 握手；可选项优先按成功次数、平均延迟和抖动排序。'
+  dim '推荐：证书/SNI、TLS 1.3、h2、X25519 与稳定性均通过；可用项允许选择但会显示缺失条件。'
+  dim '延迟为 DNS + TCP + TLS 握手；推荐、可用、拒绝依次排序。'
   # Header widths compensate for CJK double-cell display width; data stays one row per target.
   printf '%-4s %-27s %-7s %-4s %-5s %-20s %-28s %-11s %-11s %-9s\n' \
     '序' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r host selectable reason successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
+    IFS=$'\t' read -r host grade reason successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
     target_cell=$(clip_cell "$host" 25)
     alpn_cell=$(clip_cell "$alpn" 5)
     curve_cell=$(clip_cell "$curve" 16)
     cert_cell=$(clip_cell "$cert" 26)
-    if [[ "$selectable" == 1 ]]; then
+    if [[ "$grade" != 0 ]]; then
       avg_cell="${avg} ms"; jitter_cell="${jitter} ms"; success_cell="${successes}/${REALITY_SCAN_SAMPLES}"
+      [[ "$grade" == 2 ]] && status='推荐' || status='可用'
       printf '%-3d %-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
-        "$((i + 1))" "$target_cell" '可选' "$tls" "$alpn_cell" "$curve_cell" "$cert_cell" "$avg_cell" "$jitter_cell" "$success_cell"
+        "$((i + 1))" "$target_cell" "$status" "$tls" "$alpn_cell" "$curve_cell" "$cert_cell" "$avg_cell" "$jitter_cell" "$success_cell"
+      [[ "$grade" == 2 ]] || dim "    注意：${reason}"
     else
       avg_cell='-'; jitter_cell='-'; success_cell="${successes}/${REALITY_SCAN_SAMPLES}"
       printf '%-3d %-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
@@ -1507,8 +1560,9 @@ choose_scanned_reality_sni(){
   ask '请选择扫描目标：' choice
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-9][0-9]*$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
-  IFS=$'\t' read -r host selectable reason successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
-  [[ "$selectable" == 1 ]] || { yellow "该目标不可选择：${reason}"; return 0; }
+  IFS=$'\t' read -r host grade reason successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
+  [[ "$grade" != 0 ]] || { yellow "该目标不可选择：${reason}"; return 0; }
+  [[ "$grade" == 2 ]] || confirm_change "确认使用基础可用目标 ${host}？" "$reason；推荐优先选择“推荐”级目标。" || return 0
   jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
     yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
   candidate=$(jq --arg x "$host" '
@@ -1541,8 +1595,10 @@ set_reality_sni(){
       [[ "$host" != *:* && ! "$host" =~ ^[0-9.]+$ ]] || { red 'Reality SNI 必须填写域名。'; return 0; }
       results=$(scan_reality_candidates "$host") || true
       [[ -n "$results" ]] || { red '该目标未产生扫描结果，原配置未改变。'; return 0; }
-      IFS=$'\t' read -r _ selectable reason _ <<<"$results"
-      [[ "$selectable" == 1 ]] || { red "该目标不可选：${reason}。原配置未改变。"; return 0; }
+      IFS=$'\t' read -r _ grade reason _ <<<"$results"
+      [[ "$grade" != 0 ]] || { red "该目标不可选：${reason}。原配置未改变。"; return 0; }
+      [[ "$grade" == 2 ]] ||
+        confirm_change "确认使用基础可用目标 ${host}？" "$reason；推荐优先选择“推荐”级目标。" || return 0
       jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
         yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
       candidate=$(jq --arg x "$host" '
@@ -1582,7 +1638,7 @@ certificate_entry_id(){
   printf 'cert_%s\n' "$(printf '%s' "$1" | sha256sum | awk '{print substr($1,1,12)}')"
 }
 set_certificate(){
-  local name cert key choice mode insecure candidate id
+  local name cert key source_cert source_key choice mode insecure candidate id source_choice auto_sync
   ask '证书名称（例如 example.com；回车/0 返回上一级）：' name
   cancel_input "$name" && return 0
   ask '证书完整路径（回车/0 返回上一级）：' cert
@@ -1606,9 +1662,20 @@ set_certificate(){
        "$(certificate_spki_sha256 "$cert")" =~ ^[A-Za-z0-9+/]{43}=$ ]] ||
       { red '证书固定值计算失败，原配置未改变。'; return 0; }
   fi
-  id=$(certificate_entry_id "${name}:${cert}")
+  menu_header '证书续期同步' '主菜单 / 配置 / 证书管理 / 导入证书'
+  menu_item 1 '跟踪当前源文件；续期后自动校验、同步并重启（推荐）'
+  menu_item 2 '只保存当前快照；以后手动重新导入'
+  menu_back '取消导入'
+  ask '请选择 [0-2]：' source_choice
+  cancel_input "$source_choice" && return 0
+  case "$source_choice" in 1) auto_sync=true;;2) auto_sync=false;;*) red '无效输入。'; return 0;; esac
+  source_cert=$cert; source_key=$key
+  persist_domain_certificate "${name}:${source_cert}" "$source_cert" "$source_key"
+  id=$FOUND_CERT_ID; cert=$FOUND_CERT; key=$FOUND_KEY
   candidate=$(jq --arg id "$id" --arg name "$name" --arg cert "$cert" --arg key "$key" --arg mode "$mode" --argjson insecure "$insecure" \
-    '.certificates[$id]={name:$name,cert:$cert,key:$key,mode:$mode,insecure:$insecure}' "$STATE_FILE")
+    --arg source_cert "$source_cert" --arg source_key "$source_key" --argjson auto_sync "$auto_sync" \
+    '.certificates[$id]={name:$name,cert:$cert,key:$key,mode:$mode,insecure:$insecure,
+      source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:$auto_sync}}' "$STATE_FILE")
   if printf '%s\n' "$candidate" | commit_state; then
     green "证书已加入证书库：${name}（${id}）。请使用“为协议选择证书”完成绑定。"
   fi
@@ -1650,7 +1717,7 @@ persist_domain_certificate(){ # domain source-cert source-key; sets FOUND_CERT, 
   FOUND_CERT="$dir/cert.pem"; FOUND_KEY="$dir/private.key"
 }
 bind_trusted_domain_certificate(){ # tag domain cert key
-  local tag=$1 domain=$2 cert=$3 key=$4 candidate id
+  local tag=$1 domain=$2 cert=$3 key=$4 source_cert=$3 source_key=$4 candidate id
   persist_domain_certificate "$domain" "$cert" "$key"
   cert=$FOUND_CERT; key=$FOUND_KEY; id=$FOUND_CERT_ID
   if [[ "$tag" == all ]]; then
@@ -1662,7 +1729,9 @@ bind_trusted_domain_certificate(){ # tag domain cert key
     candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
   fi
   candidate=$(jq --arg id "$id" --arg domain "$domain" --arg cert "$cert" --arg key "$key" \
-    '.certificates[$id]={name:$domain,cert:$cert,key:$key,mode:"trusted",insecure:false}' <<<"$candidate")
+    --arg source_cert "$source_cert" --arg source_key "$source_key" \
+    '.certificates[$id]={name:$domain,cert:$cert,key:$key,mode:"trusted",insecure:false,
+      source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:true}}' <<<"$candidate")
   if [[ "$tag" == all ]]; then
     candidate=$(jq --arg id "$id" '
       .protocols.vmess.certificate_id=$id |
@@ -1683,6 +1752,155 @@ bind_trusted_domain_certificate(){ # tag domain cert key
   fi
   red '证书绑定失败，已保留原自签证书和协议配置。'
   return 1
+}
+certificate_source_status(){ # source object -> short status
+  local source=$1 type enabled cert
+  type=$(jq -r '.type // "snapshot"' <<<"$source")
+  enabled=$(jq -r '.auto_sync // false' <<<"$source")
+  if [[ "$type" != files ]]; then printf '快照（不跟踪源文件）'; return; fi
+  cert=$(jq -r '.cert' <<<"$source")
+  if [[ "$enabled" == true ]]; then
+    [[ -r "$cert" ]] && printf '自动同步：源文件可读' || printf '自动同步：源文件不可读'
+  else
+    printf '快照模式（源文件跟踪已关闭）'
+  fi
+}
+certificate_sync_has_sources(){
+  local state=${1:-"$(cat "$STATE_FILE")"}
+  jq -e '[.certificates[] | select(.source.type=="files" and .source.auto_sync)] | length > 0' <<<"$state" >/dev/null
+}
+certificate_runtime_domains_valid(){ # certificate-id source-cert state
+  local id=$1 cert=$2 state=$3 tag domain
+  while IFS=$'\t' read -r tag domain; do
+    certificate_matches_domain "$cert" "$domain" || {
+      red "续期证书不覆盖正在使用的 ${tag} 域名：${domain}"
+      return 1
+    }
+  done < <(jq -r --arg id "$id" '
+    .protocols | to_entries[] |
+    select(.key=="vmess" or .key=="hy2" or .key=="anytls") |
+    select(.value.enabled and .value.certificate_id==$id) |
+    [.key,.value.domain] | @tsv
+  ' <<<"$state")
+}
+certificate_copy_atomic(){ # source destination mode
+  local source=$1 destination=$2 mode=$3 next
+  next="${destination}.next.$$"
+  install -m "$mode" "$source" "$next" && mv -f "$next" "$destination"
+}
+sync_managed_certificate(){ # id, only changes managed files after validation
+  local id=$1 state=$2 quiet=${3:-false} source_cert source_key current_cert current_key candidate tmp config xray backup_cert backup_key changed=0
+  source_cert=$(jq -r --arg id "$id" '.certificates[$id].source.cert' <<<"$state")
+  source_key=$(jq -r --arg id "$id" '.certificates[$id].source.key' <<<"$state")
+  current_cert=$(jq -r --arg id "$id" '.certificates[$id].cert' <<<"$state")
+  current_key=$(jq -r --arg id "$id" '.certificates[$id].key' <<<"$state")
+  certificate_pair_valid "$source_cert" "$source_key" || { [[ "$quiet" == true ]] || red "证书 ${id} 的续期源无效或不可读，未替换。"; return 1; }
+  certificate_runtime_domains_valid "$id" "$source_cert" "$state" || return 1
+  [[ "$(certificate_der_sha256 "$source_cert")" == "$(certificate_der_sha256 "$current_cert")" ]] || changed=1
+  [[ "$(openssl pkey -in "$source_key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')" == "$(openssl pkey -in "$current_key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')" ]] || changed=1
+  ((changed)) || return 2
+  candidate=$(jq --arg id "$id" --arg cert "$source_cert" --arg key "$source_key" '.certificates[$id].cert=$cert | .certificates[$id].key=$key' <<<"$state")
+  tmp=$(tmpdir); config="$tmp/sb.json"; xray="$tmp/xray.json"
+  render_config "$candidate" "$config" && render_xray_config "$candidate" "$xray" || return 1
+  "$STATE_DIR/sing-box" check -c "$config" || { [[ "$quiet" == true ]] || red "证书 ${id} 的 Sing-box 预检查失败，未替换。"; return 1; }
+  if state_uses_engine "$candidate" xray; then
+    "$STATE_DIR/xray" run -test -c "$xray" || { [[ "$quiet" == true ]] || red "证书 ${id} 的 Xray 预检查失败，未替换。"; return 1; }
+  fi
+  backup_cert="$tmp/cert.pem.old"; backup_key="$tmp/private.key.old"
+  cp "$current_cert" "$backup_cert" && cp "$current_key" "$backup_key" || return 1
+  if ! certificate_copy_atomic "$source_cert" "$current_cert" 644 || ! certificate_copy_atomic "$source_key" "$current_key" 600; then
+    cp "$backup_cert" "$current_cert"; cp "$backup_key" "$current_key"; return 1
+  fi
+  if ! generate_subscriptions; then
+    red "证书 ${id} 的订阅安全参数生成失败，正在恢复旧证书。"
+    cp "$backup_cert" "$current_cert"; cp "$backup_key" "$current_key"
+    generate_subscriptions || true
+    return 1
+  fi
+  if ! reconcile_core_services "$state"; then
+    red "证书 ${id} 重启失败，正在恢复旧证书。"
+    cp "$backup_cert" "$current_cert"; cp "$backup_key" "$current_key"
+    generate_subscriptions || true
+    reconcile_core_services "$state" || true
+    return 1
+  fi
+  [[ "$quiet" == true ]] || green "证书 ${id} 已从受管源同步并重启服务。"
+  return 0
+}
+sync_managed_certificates(){ # [quiet]
+  local quiet=${1:-false} state id rc changed=0 failed=0
+  [[ -f "$STATE_FILE" ]] || return 0
+  state=$(cat "$STATE_FILE")
+  while IFS= read -r id; do
+    sync_managed_certificate "$id" "$state" "$quiet"; rc=$?
+    [[ $rc == 0 ]] && changed=1
+    [[ $rc == 1 ]] && failed=1
+  done < <(jq -r '.certificates | to_entries[] | select(.value.source.type=="files" and .value.source.auto_sync) | .key' <<<"$state")
+  ((failed)) && return 1
+  ((changed)) && return 0
+  [[ "$quiet" == true ]] || dim '没有检测到需要同步的受管证书。'
+  return 0
+}
+reconcile_certificate_sync_schedule(){ # state, only mutates the real VPS installation
+  local state=$1 unit timer periodic
+  [[ "$STATE_DIR" == /etc/s-box ]] || return 0
+  unit=/etc/systemd/system/sing-box-cert-sync.service
+  timer=/etc/systemd/system/sing-box-cert-sync.timer
+  periodic=/etc/periodic/6h/sing-box-yg-cert-sync
+  if ! certificate_sync_has_sources "$state"; then
+    systemctl disable --now sing-box-cert-sync.timer 2>/dev/null || true
+    rm -f "$unit" "$timer" "$periodic"
+    systemctl daemon-reload 2>/dev/null || true
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    cat > "$unit" <<'EOF'
+[Unit]
+Description=sing-box-yg managed certificate synchronization
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sb cert-sync --quiet
+EOF
+    cat > "$timer" <<'EOF'
+[Unit]
+Description=Run sing-box-yg certificate synchronization
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=6h
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload && systemctl enable --now sing-box-cert-sync.timer
+  elif [[ -d /etc/periodic/6h ]]; then
+    install -m 700 /dev/stdin "$periodic" <<'EOF'
+#!/bin/sh
+/usr/local/bin/sb cert-sync --quiet
+EOF
+  else
+    yellow '未检测到 systemd 或 OpenRC periodic；请在证书管理中手动同步。'
+  fi
+}
+toggle_certificate_auto_sync(){
+  local id choice candidate
+  while IFS=$'\t' read -r id; do
+    printf '%s  %s\n' "$id" "$(certificate_source_status "$(jq -c --arg id "$id" '.certificates[$id].source' "$STATE_FILE")")"
+  done < <(jq -r '.certificates | to_entries[] | select(.value.source.type=="files") | .key' "$STATE_FILE")
+  ask '输入证书 ID（回车/0 返回上一级）：' id
+  cancel_input "$id" && return 0
+  jq -e --arg id "$id" '.certificates[$id].source.type=="files"' "$STATE_FILE" >/dev/null || { red '未找到可跟踪源文件的证书。'; return 0; }
+  menu_item 1 '开启自动同步'
+  menu_item 2 '关闭自动同步'
+  menu_back '返回证书管理'
+  ask '请选择 [0-2]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in 1|2) ;; *) red '无效输入。'; return 0;; esac
+  candidate=$(jq --arg id "$id" --argjson enabled "$([[ "$choice" == 1 ]] && echo true || echo false)" '.certificates[$id].source.auto_sync=$enabled' "$STATE_FILE")
+  printf '%s\n' "$candidate" | commit_state
 }
 domain_certificate_wizard(){ # target tag
   local tag=$1 domain choice
@@ -1733,12 +1951,14 @@ domain_certificate_target_menu(){
   domain_certificate_wizard "$tag"
 }
 show_certificate(){
-  local id name cert mode der_pin spki_pin
+  local id name cert mode der_pin spki_pin source
   echo '证书库与协议绑定：'
   jq '{bindings:{vmess:{domain:.protocols.vmess.domain,certificate_id:.protocols.vmess.certificate_id},hy2:{domain:.protocols.hy2.domain,certificate_id:.protocols.hy2.certificate_id},anytls:{domain:.protocols.anytls.domain,certificate_id:.protocols.anytls.certificate_id}},certificates}' "$STATE_FILE"
   while IFS=$'\t' read -r id name cert mode; do
     echo
     printf '[%s] %s（%s）\n' "$id" "$name" "$mode"
+    source=$(jq -c --arg id "$id" '.certificates[$id].source' "$STATE_FILE")
+    printf '续期来源：%s\n' "$(certificate_source_status "$source")"
     if [[ -r "$cert" ]]; then
     openssl x509 -in "$cert" -noout -subject -issuer -dates
     openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null || true
@@ -1748,7 +1968,7 @@ show_certificate(){
       printf 'Sing-box certificate_public_key_sha256：%s\n' "$spki_pin"
       yellow '固定证书一旦轮换，客户端必须重新导入订阅。'
     else
-      green '当前使用系统 CA 验证；续期后客户端不需要更新指纹。托管副本请重跑向导同步新证书。'
+      green '当前使用系统 CA 验证；续期后客户端不需要更新指纹。'
     fi
     else yellow '当前证书文件不可读。'; fi
   done < <(jq -r '.certificates | to_entries[] | [.key,.value.name,.value.cert,(.value.mode // (if .value.insecure then "pinned" else "trusted" end))] | @tsv' "$STATE_FILE")
@@ -1838,11 +2058,14 @@ certificate_menu(){
     menu_item 3 '修改协议证书域名'
     menu_item 4 '域名证书向导（检测 / ACME / 自动绑定）'
     menu_item 5 '为协议选择证书'
+    menu_item 6 '立即同步受管证书来源'
+    menu_item 7 '开启或关闭证书自动同步'
     menu_back '返回配置菜单'
-    ask '请选择 [0-5]：' choice
+    ask '请选择 [0-7]：' choice
     case "$choice" in
       1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
       4)domain_certificate_target_menu;;5)select_certificate_for_protocol;;
+      6)sync_managed_certificates;;7)toggle_certificate_auto_sync;;
       0|'')return 0;;*)red '无效输入。';;
     esac
   done
@@ -1868,6 +2091,52 @@ set_hy2_hop(){
     *) red '无效输入。'; return 0;;
   esac
   candidate=$(jq --arg x "$x" '.protocols.hy2.udp_hop=$x' "$STATE_FILE")
+  apply_state "$candidate"
+}
+show_anytls_padding(){
+  local mode
+  mode=$(jq -r '.protocols.anytls.padding.mode' "$STATE_FILE")
+  printf '当前模式：%s\n' "$([[ "$mode" == default ]] && printf '官方默认（显式固定）' || printf '自定义')"
+  if [[ "$mode" == default ]]; then
+    jq -r '.[]' <<<"$ANYTLS_DEFAULT_PADDING"
+  else
+    jq -r '.protocols.anytls.padding.lines[]' "$STATE_FILE"
+  fi
+}
+set_anytls_padding(){
+  local choice line candidate mode
+  local -a lines=()
+  menu_header 'AnyTLS Padding 方案' '主菜单 / 配置 / 协议 / AnyTLS / Padding'
+  show_anytls_padding
+  echo
+  menu_item 1 '恢复官方默认方案（推荐）'
+  menu_item 2 '录入自定义方案（逐行粘贴）'
+  menu_back '返回专项参数'
+  ask '请选择 [0-2]：' choice
+  cancel_input "$choice" && return 0
+  case "$choice" in
+    1)
+      candidate=$(jq '.protocols.anytls.padding={mode:"default",lines:[]}' "$STATE_FILE")
+      ;;
+    2)
+      yellow '每行一个规则；输入空行完成。必须包含唯一的 stop=N，并且包序号小于 stop。'
+      while :; do
+        read -r -p "规则 ${#lines[@]}（空行完成，首行输入 0 取消）：" line
+        if [[ -z "$line" ]]; then break; fi
+        [[ ${#lines[@]} -gt 0 || "$line" != 0 ]] || return 0
+        lines+=("$line")
+      done
+      ((${#lines[@]})) || { yellow '未输入任何规则，原配置未改变。'; return 0; }
+      anytls_padding_valid custom "${lines[@]}" || {
+        red 'Padding 方案格式无效：检查 stop、包序号、范围、逗号和重复项。'
+        return 0
+      }
+      candidate=$(jq -n --argjson state "$(cat "$STATE_FILE")" \
+        '$state | .protocols.anytls.padding={mode:"custom",lines:$ARGS.positional}' \
+        --args "${lines[@]}")
+      ;;
+    *) red '无效输入。'; return 0;;
+  esac
   apply_state "$candidate"
 }
 set_argo(){
@@ -1973,9 +2242,10 @@ specialty_menu(){
         dim '普通 TLS 的 SNI 必须匹配实际证书域名，不使用 Reality 的第三方目标。'
         menu_item 1 '仅修改证书域名'
         menu_item 2 '域名证书向导（检测 / ACME / 自动绑定）'
+        menu_item 3 '管理 AnyTLS Padding 方案'
         menu_back '返回协议设置'
-        ask '请选择 [0-2]：' choice
-        case "$choice" in 1)set_tls_domain "$tag";;2)domain_certificate_wizard "$tag";;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-3]：' choice
+        case "$choice" in 1)set_tls_domain "$tag";;2)domain_certificate_wizard "$tag";;3)set_anytls_padding;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
   done
@@ -2123,7 +2393,7 @@ update_menu(){
     menu_header '更新管理' '主菜单 / 更新管理'
     printf '  当前渠道：%s\n\n' "$FORK_BRANCH"
     menu_item 1 "从当前渠道更新（${FORK_BRANCH}）"
-    menu_item 2 '切换到稳定版 v0.0.2 并更新'
+    menu_item 2 '切换到稳定版 v0.0.4 并更新'
     menu_item 3 '切换到开发版 main 并更新'
     menu_item 4 '输入其他分支或标签'
     menu_back '返回主菜单'
@@ -2132,7 +2402,7 @@ update_menu(){
     case "$choice" in
       1) update_script && return 0 || true;;
       2)
-        set_channel v0.0.2
+        set_channel v0.0.4
         update_script && return 0 || set_channel "$previous"
         ;;
       3)
@@ -2213,7 +2483,8 @@ uninstall(){
     "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
   done
   rm -f "$(bbr_sysctl_file)" "$(bbr_module_file)"
-  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/init.d/sing-box /etc/init.d/sing-box-xray
+  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/systemd/system/sing-box-cert-sync.service /etc/systemd/system/sing-box-cert-sync.timer /etc/init.d/sing-box /etc/init.d/sing-box-xray
+  rm -f /etc/periodic/6h/sing-box-yg-cert-sync
   rm -f /usr/local/bin/sb
   systemctl daemon-reload 2>/dev/null || true
   green '卸载完成：服务、状态文件、防火墙跳跃链和 sb 快捷命令已删除。'
@@ -2222,7 +2493,14 @@ uninstall(){
 
 main(){
   local migration_rc migration_choice
-  need_root; if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
+  need_root
+  if [[ "${1:-}" == cert-sync ]]; then
+    [[ -f "$STATE_FILE" ]] || exit 0
+    ensure_current_state_schema || exit 1
+    sync_managed_certificates "${2:-false}"
+    exit $?
+  fi
+  if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
   if ensure_current_state_schema; then
     :
   else
