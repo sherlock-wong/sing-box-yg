@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.15'
+SCRIPT_VERSION='v26.7.25-vpnm.16'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -2858,6 +2858,35 @@ choose_protocol_activation_port(){ # tag -> sets ACTIVATION_PORT; 2 means user c
     esac
   done
 }
+choose_vless_activation_sni(){ # sets ACTIVATION_VLESS_SNI; 2 means user cancelled
+  local choice sni
+  ACTIVATION_VLESS_SNI=
+  while :; do
+    menu_header '启用向导：Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / 启用'
+    dim '新添加的 Vless-Reality 需要明确选择目标 SNI；它会同时作为 Reality 握手目标和客户端 SNI。'
+    menu_item 1 '推荐默认：www.apple.com'
+    menu_item 2 '自定义：手动填写 Reality SNI'
+    menu_back '取消添加并返回协议设置'
+    ask '请选择 [0-2]：' choice
+    case "$choice" in
+      1)
+        ACTIVATION_VLESS_SNI=www.apple.com
+        return 0
+        ;;
+      2)
+        while :; do
+          ask 'Reality SNI（必须是域名；回车/0 返回选择）：' sni
+          cancel_input "$sni" && break
+          valid_domain_name "$sni" || { red 'Reality SNI 必须是有效域名。'; continue; }
+          ACTIVATION_VLESS_SNI=$sni
+          return 0
+        done
+        ;;
+      0|'') return 2;;
+      *) red '无效输入。';;
+    esac
+  done
+}
 read_hy2_hop_range(){ # sets ACTIVATION_HY2_HOP
   local hop conflict
   while :; do
@@ -2933,16 +2962,17 @@ protocol_activation_prerequisites(){ # tag
     red "${tag} 当前证书不覆盖 ${domain}；请先在“专项参数”中修改域名或选择匹配证书。"; return 1;
   }
 }
-show_protocol_activation_summary(){ # tag port [Hy2 hop]
-  local tag=$1 p=$2 hop=${3:-} cert_id cert_name tls engine
+show_protocol_activation_summary(){ # tag port [Hy2 hop] [Vless SNI]
+  local tag=$1 p=$2 hop=${3:-} vless_sni=${4:-} cert_id cert_name tls engine
   echo
   yellow "${tag} 即将启用的配置："
   printf '  监听端口：%s/%s\n' "$p" "$(protocol_transport "$tag")"
   case "$tag" in
     vless)
       engine=$(jq -r '.protocols.vless.engine' "$STATE_FILE")
-      printf '  Reality 服务端：%s；SNI：%s\n' "$engine" "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
-      dim '如需扫描或更换 SNI，请取消后进入“专项参数 → Reality SNI 与目标扫描”。'
+      [[ -n "$vless_sni" ]] || vless_sni=$(jq -r '.protocols.vless.sni' "$STATE_FILE")
+      printf '  Reality 服务端：%s；SNI：%s\n' "$engine" "$vless_sni"
+      dim '启用后仍可通过“专项参数 → Reality SNI 与目标扫描”扫描并更换目标。'
       ;;
     vmess)
       tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE")
@@ -2962,7 +2992,7 @@ show_protocol_activation_summary(){ # tag port [Hy2 hop]
   return 0
 }
 toggle_protocol(){
-  local tag=$1 state p label hop conflict
+  local tag=$1 state p label hop conflict configured
   label=$(protocol_label "$tag")
   if tag_enabled "$tag"; then
     confirm_change "确认停用 ${label}？" \
@@ -2970,9 +3000,13 @@ toggle_protocol(){
     state=$(jq --arg t "$tag" '.protocols[$t].enabled=false' "$STATE_FILE")
   else
     [[ "$tag" != anytls || $(jq -r '.core' "$STATE_FILE") != 1.10* ]] || { red '1.10 内核不支持 AnyTLS。'; return 0; }
+    configured=$(tag_configured "$tag" && printf true || printf false)
     [[ "$tag" != hy2 ]] || choose_hy2_activation_hop || return 0
     choose_protocol_activation_port "$tag" || return 0
     p=$ACTIVATION_PORT
+    if [[ "$tag" == vless && "$configured" != true ]]; then
+      choose_vless_activation_sni || return 0
+    fi
     protocol_activation_prerequisites "$tag" || return 0
     if [[ "$tag" == hy2 && -n "$ACTIVATION_HY2_HOP" ]]; then
       hop=$ACTIVATION_HY2_HOP
@@ -2980,11 +3014,20 @@ toggle_protocol(){
       [[ -z "$conflict" ]] || { red "跳跃范围包含正在被其他服务监听的 UDP 端口：${conflict}。"; return 0; }
       hy2_hop_nat_preflight || return 0
     fi
-    show_protocol_activation_summary "$tag" "$p" "${ACTIVATION_HY2_HOP:-}"
+    show_protocol_activation_summary "$tag" "$p" "${ACTIVATION_HY2_HOP:-}" "${ACTIVATION_VLESS_SNI:-}"
     confirm_change "确认启用 ${label}？" \
       "将使用 $(protocol_transport "$tag") 端口 ${p}，并同步配置、节点、订阅和 UFW（如已启用）。" || return 0
     state=$(jq --arg t "$tag" --argjson p "$p" --arg hop "${ACTIVATION_HY2_HOP:-}" \
       '.protocols[$t].configured=true | .protocols[$t].port=$p | .protocols[$t].enabled=true | if $t=="hy2" then .protocols.hy2.udp_hop=$hop else . end' "$STATE_FILE")
+    if [[ "$tag" == vless && -n "${ACTIVATION_VLESS_SNI:-}" ]]; then
+      state=$(jq --arg sni "$ACTIVATION_VLESS_SNI" '
+        .protocols.vless.sni=$sni |
+        .protocols.vless.xray.target=($sni+":443") |
+        .protocols.vless.xray.server_names=[$sni] |
+        .protocols.vless.xray.mldsa65_seed="" |
+        .protocols.vless.xray.mldsa65_verify=""
+      ' <<<"$state")
+    fi
   fi
   apply_state "$state"
 }

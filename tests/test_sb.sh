@@ -284,6 +284,14 @@ toggle_protocol hy2 <<< $'1\n1\n1'
 [[ $(jq -r '.protocols.hy2.port' <<<"$activation_candidate") == 29001 ]] || exit 1
 toggle_protocol hy2 <<< $'2\n32000:32010\n1\n1'
 [[ $(jq -r '.protocols.hy2.udp_hop' <<<"$activation_candidate") == 32000:32010 ]] || exit 1
+activation_state=$(make_state 1.13.14 "$CORE_DEFAULT")
+printf '%s\n' "$activation_state" > "$STATE_FILE"
+activation_candidate=
+toggle_protocol vless <<< $'2\n26002\n2\nreality.example\n1'
+[[ $(jq -r '.protocols.vless.enabled' <<<"$activation_candidate") == true ]] || exit 1
+[[ $(jq -r '.protocols.vless.port' <<<"$activation_candidate") == 26002 ]] || exit 1
+[[ $(jq -r '.protocols.vless.sni' <<<"$activation_candidate") == reality.example ]] || exit 1
+[[ $(jq -r '.protocols.vless.xray.target' <<<"$activation_candidate") == reality.example:443 ]] || exit 1
 eval "$saved_activation_apply"
 eval "$saved_activation_confirm"
 eval "$saved_activation_port_available"
