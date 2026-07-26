@@ -293,10 +293,25 @@ eval "$saved_activation_hop_preflight"
 
 # Protocol menus expose live enabled state, transport, port and TLS details.
 set_case_dir four
+four_state=$(cat "$TEST_ROOT/four/protocols.json")
 protocol_line=$(protocol_status_line 1 vless)
 [[ "$protocol_line" == *'Vless-Reality'*'[已启用]'*'TCP'*'25001'*'Sing-box'*'SNI www.apple.com'* ]]
 protocol_line=$(protocol_status_line 4 anytls)
 [[ "$protocol_line" == *'AnyTLS'*'[已启用]'*'TCP'*'固定证书'* ]]
+[[ "$protocol_line" == *$'\033[32;1m'* ]]
+protocol_link=$(show_protocol_share_link vless)
+[[ "$protocol_link" == *'当前分享链接（可直接复制）'*'vless://'* ]]
+
+# Distinguish retained-but-disabled and removed protocol state at a glance.
+disabled_state=$(jq '.protocols.vmess.enabled=false' "$STATE_FILE")
+printf '%s\n' "$disabled_state" > "$STATE_FILE"
+protocol_line=$(protocol_status_line 2 vmess)
+[[ "$protocol_line" == *$'\033[33;1m'*'[未启用]'* ]]
+removed_state=$(jq '.protocols.vmess.configured=false | .protocols.vmess.enabled=false' "$STATE_FILE")
+printf '%s\n' "$removed_state" > "$STATE_FILE"
+protocol_line=$(protocol_status_line 2 vmess)
+[[ "$protocol_line" == *$'\033[31;1m'*'[未添加]'* ]]
+printf '%s\n' "$four_state" > "$STATE_FILE"
 
 # New self-signed certificates are leaf certificates with SAN and both client-specific pins.
 four_state=$(cat "$TEST_ROOT/four/protocols.json")

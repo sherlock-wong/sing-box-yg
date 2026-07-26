@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.13'
+SCRIPT_VERSION='v26.7.25-vpnm.14'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -284,7 +284,7 @@ protocol_status_line(){
   local index=$1 tag=$2 line port
   if ! tag_configured "$tag"; then
     printf -v line '  %s. %-16s [未添加]' "$index" "$(protocol_label "$tag")"
-    dim "$line"
+    red "$line"
   elif tag_enabled "$tag"; then
     port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
     printf -v line '  %s. %-16s [已启用] %-3s %-5s  %s' \
@@ -292,7 +292,7 @@ protocol_status_line(){
     green "$line"
   else
     printf -v line '  %s. %-16s [未启用]' "$index" "$(protocol_label "$tag")"
-    dim "$line"
+    yellow "$line"
   fi
 }
 service_runtime_status(){
@@ -330,7 +330,11 @@ main_dashboard(){
   menu_header "VPS Net Manager ${SCRIPT_VERSION}" '主菜单'
   printf '  渠道：%-18s 服务：%s\n' "$FORK_BRANCH" "$(service_runtime_status)"
   printf '  内核：Sing-box %s%s\n' "$core" "$xray"
-  printf '  协议：%s 个已启用\n' "$protocols"
+  if (( protocols == 0 )); then
+    yellow '  协议：0 个已启用（代理服务已停止，可随时添加或启用协议）'
+  else
+    green "  协议：${protocols} 个已启用"
+  fi
   printf '  Realm：%s\n' "$realm"
   menu_rule
 }
@@ -2585,6 +2589,34 @@ set_tls_domain(){
   candidate=$(jq --arg t "$tag" --arg d "$domain" --arg id "$id" '.protocols[$t].domain=$d | .protocols[$t].certificate_id=$id' "$STATE_FILE")
   apply_state "$candidate"
 }
+show_protocol_share_link(){ # protocol tag
+  local tag=$1 prefix link
+  if ! tag_enabled "$tag"; then
+    yellow '当前协议未启用，因此没有可用的分享链接。'
+    return 0
+  fi
+  if [[ -z "$(address)" ]]; then
+    yellow '未检测到分享链接对外地址；请先在“修改分享链接的对外地址”中设置 IPv4、IPv6 或域名。'
+    return 0
+  fi
+  generate_subscriptions || { red '重新生成当前协议分享链接失败。'; return 0; }
+  case "$tag" in
+    vless) prefix='^vless://';;
+    vmess) prefix='^vmess://';;
+    hy2) prefix='^hysteria2://';;
+    anytls) prefix='^anytls://';;
+    *) red '未知协议。'; return 0;;
+  esac
+  link=$(grep -m1 "$prefix" "$STATE_DIR/subscription.txt" 2>/dev/null || true)
+  if [[ -z "$link" ]]; then
+    red '未生成当前协议的分享链接，请检查协议配置。'
+    return 0
+  fi
+  echo
+  green '当前分享链接（可直接复制）：'
+  printf '%s\n' "$link"
+}
+
 show_protocol_configuration(){ # protocol tag
   local tag=$1 cert_id
   menu_header '当前协议配置' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 查看配置"
@@ -2602,6 +2634,7 @@ show_protocol_configuration(){ # protocol tag
       ;;
     *) red '未知协议。'; return 0;;
   esac
+  show_protocol_share_link "$tag"
   echo
   read -r -p '按回车返回协议设置：' _
 }
@@ -3071,7 +3104,8 @@ protocol_menu(){
     while :; do
       if ! tag_configured "$tag"; then
         menu_header "$(protocol_label "$tag")" "主菜单 / 配置 / 协议管理 / $(protocol_label "$tag")"
-        printf '  状态：未添加\n\n'
+        red '  状态：未添加（已删除）'
+        echo
         dim '已删除的协议不保留可见配置；添加后会进入端口和协议专项向导。'
         menu_item 1 '添加协议'
         menu_back '返回协议列表'
@@ -3083,9 +3117,12 @@ protocol_menu(){
       port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
       valid_port "$port" || port='未分配'
       menu_header "$(protocol_label "$tag")" "主菜单 / 配置 / 协议管理 / $(protocol_label "$tag")"
-      printf '  状态：%s   端口：%s/%s\n\n' \
-        "$([[ "$action" == 停用协议 ]] && printf '已启用' || printf '未启用')" \
-        "${port:-未分配}" "$(protocol_transport "$tag")"
+      if [[ "$action" == 停用协议 ]]; then
+        green "  状态：已启用   端口：${port:-未分配}/$(protocol_transport "$tag")"
+      else
+        yellow "  状态：已停用（配置保留）   端口：${port:-未分配}/$(protocol_transport "$tag")"
+      fi
+      echo
       menu_item 1 '查看当前协议配置'
       menu_item 2 "$action"
       menu_item 3 '修改节点名称'

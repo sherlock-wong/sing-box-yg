@@ -1,4 +1,6 @@
-v26.7.25-vpnm.13
+v26.7.25-vpnm.14
+
+改进：状态使用绿色（已启用）、黄色（已停用或零协议）和红色（未添加）显示；单协议配置视图会直接显示当前可复制的分享链接。
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
 
