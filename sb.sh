@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.16'
+SCRIPT_VERSION='v26.7.25-vpnm.17'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -3285,8 +3285,21 @@ install_flow(){
   offer_tls_certificate_setup
 }
 
+resolve_update_commit(){ # current channel -> immutable 40-character Git commit
+  local encoded_ref commit
+  encoded_ref=$(urlencode "$FORK_BRANCH")
+  commit=$(curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+    "https://api.github.com/repos/${FORK_OWNER}/${FORK_REPO}/commits/${encoded_ref}" 2>/dev/null |
+    jq -r '.sha // empty' 2>/dev/null || true)
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || {
+    red "无法解析渠道 ${FORK_BRANCH} 对应的 GitHub commit，未更新脚本。"
+    return 1
+  }
+  printf '%s\n' "$commit"
+}
+
 update_script(){
-  local reload=${1:-reload} expected
+  local reload=${1:-reload} expected commit remote_raw
   if [[ "$reload" == reload ]]; then
     menu_header '更新脚本' '主菜单 / 更新管理'
     printf '  更新渠道：%s\n' "$FORK_BRANCH"
@@ -3295,12 +3308,14 @@ update_script(){
       "更新成功后将保存渠道 ${FORK_BRANCH}，并立即进入新脚本。" || return 2
   fi
   WORKDIR=$(tmpdir)
-  expected=$(curl -fsSL --proto '=https' --tlsv1.2 "$FORK_RAW/sb.sh.sha256" | awk '{print $1}')
-  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die 'fork 快捷脚本校验文件无效，拒绝更新。'
-  download_verified "$FORK_RAW/sb.sh" "$expected" "$WORKDIR/sb.sh" 'fork 快捷脚本'
+  commit=$(resolve_update_commit) || return 1
+  remote_raw="https://raw.githubusercontent.com/${FORK_OWNER}/${FORK_REPO}/${commit}"
+  expected=$(curl -fsSL --retry 2 --proto '=https' --tlsv1.2 "$remote_raw/sb.sh.sha256" 2>/dev/null | awk '{print $1}')
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { red 'fork 快捷脚本校验文件无效，拒绝更新。'; return 1; }
+  download_verified "$remote_raw/sb.sh" "$expected" "$WORKDIR/sb.sh" 'fork 快捷脚本'
   install -m 755 "$WORKDIR/sb.sh" /usr/local/bin/vpnm
   persist_channel
-  green "脚本更新完成，渠道已保存为 ${FORK_BRANCH}。"
+  green "脚本更新完成，渠道已保存为 ${FORK_BRANCH}（来源提交 ${commit:0:12}）。"
   if [[ "$reload" == reload ]]; then
     green '正在切换到新脚本进程...'
     trap - EXIT
@@ -3385,7 +3400,9 @@ stop_systemd_services(){
 }
 uninstall(){
   local x fw
-  read -r -p '确认卸载 VPS Net Manager（输入 YES；回车/0 返回上一级）：' x
+  yellow '将停止并删除本项目的服务、/etc/vps-net-manager 内的协议状态/证书库/内核/订阅、项目 UFW 规则、Hy2 跳跃链和 vpnm 命令。'
+  dim '不会删除系统其他服务、管理员自建防火墙规则，或证书库外的原始证书文件。'
+  read -r -p '确认彻底卸载 VPS Net Manager（输入 YES；回车/0 返回上一级）：' x
   [[ $x == YES ]] || return 1
   [[ "$STATE_DIR" == /etc/vps-net-manager ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
   stop_systemd_services

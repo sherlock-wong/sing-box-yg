@@ -106,6 +106,13 @@ persist_channel
 ! valid_channel 'bad..ref'
 ! valid_channel '/absolute'
 ! valid_channel 'double//slash'
+saved_channel_curl=$(declare -f curl || true)
+resolved_api_url=
+curl(){ resolved_api_url="${!#}"; printf '%s\n' '{"sha":"0123456789abcdef0123456789abcdef01234567"}'; }
+set_channel feature/next
+[[ $(resolve_update_commit) == 0123456789abcdef0123456789abcdef01234567 ]]
+[[ "$resolved_api_url" == *'/commits/feature%2Fnext' ]]
+if [[ -n "$saved_channel_curl" ]]; then eval "$saved_channel_curl"; else unset -f curl; fi
 unset VPNM_CHANNEL
 set_channel main
 saved_update_script=$(declare -f update_script)

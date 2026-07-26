@@ -1,4 +1,6 @@
-v26.7.25-vpnm.16
+v26.7.25-vpnm.17
+
+修复：脚本更新先解析渠道对应的不可变 Git commit，并从该 commit 下载脚本和 SHA256；避免 GitHub 分支缓存不同步导致校验误报。
 
 改进：重新添加 Vless-Reality 时，端口选择后会明确选择 Reality SNI（推荐默认或手动填写）；确认启用后才会一起写入 SNI、Reality 目标及节点配置。
 

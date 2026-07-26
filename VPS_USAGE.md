@@ -14,7 +14,7 @@ Sing-box 模块支持 Debian、Ubuntu、RHEL 系与 Alpine；Realm 模块仅支�
 VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/sb.sh)
 ```
 
-安装后运行 `vpnm`。成功安装或更新的渠道保存在状态目录，后续更新会继续使用同一渠道。主菜单 `5` 可切换当前分支、输入标签或输入其他分支。若要固定到发布版，请将安装命令里的 `main` 与 `VPNM_CHANNEL` 同时替换为该标签。
+安装后运行 `vpnm`。成功安装或更新的渠道保存在状态目录，后续更新会继续使用同一渠道。主菜单 `5` 可切换当前分支、输入标签或输入其他分支。更新时脚本会先解析渠道对应的不可变 Git commit，再从该 commit 下载脚本与 SHA-256，避免 GitHub 分支缓存造成脚本与校验文件短暂不一致。若要固定到发布版，请将安装命令里的 `main` 与 `VPNM_CHANNEL` 同时替换为该标签。
 
 ## 3. 协议与节点
 
@@ -101,7 +101,7 @@ UFW 已启用时，协议端口和 Realm 端口会先放行新规则，服务成
 
 主菜单 `3` 重新应用当前配置并重启；`4` 更新 Sing-box 内核；`6` 查看服务日志；`9` 管理原生 BBR；`11` 卸载。BBR 只影响 TCP，Hysteria2 的 QUIC/UDP 不受它控制。
 
-卸载会停止项目创建的 Sing-box、Xray、Argo、Realm 和证书同步服务，删除项目状态、项目创建的 UFW 规则、Hy2 跳跃链及 `vpnm` 命令。不会删除系统其他服务或管理员自行创建的防火墙规则。
+卸载会停止项目创建的 Sing-box、Xray、Argo、Realm 和证书同步服务，删除整个 `/etc/vps-net-manager` 状态目录（其中包括协议配置、证书库副本、下载内核、订阅和节点信息）、项目创建的 UFW 规则、Hy2 跳跃链及 `vpnm` 命令。因此重装不会读取历史协议配置，也不会与新版状态冲突。不会删除系统其他服务、管理员自行创建的防火墙规则，或证书库外原始路径中的证书文件。
 
 ## 8. 依赖校验失败
 
