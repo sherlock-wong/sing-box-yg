@@ -307,6 +307,23 @@ grep -q 'DNS:www.bing.com' <<<"$four_cert_text"
 grep -q 'CA:FALSE' <<<"$four_cert_text"
 expected_der_pin=$(certificate_der_sha256 "$four_cert")
 expected_spki_pin=$(certificate_spki_sha256 "$four_cert")
+
+# Credential rotation defaults to generated material, while deleting a protocol
+# resets only that protocol and leaves the certificate library intact.
+saved_rotation_apply=$(declare -f apply_state)
+saved_rotation_confirm=$(declare -f confirm_change)
+rotated_state=
+apply_state(){ rotated_state=$1; }
+confirm_change(){ return 0; }
+old_vless_uuid=$(jq -r '.protocols.vless.uuid' "$STATE_FILE")
+rotate_protocol_uuid vless
+new_vless_uuid=$(jq -r '.protocols.vless.uuid' <<<"$rotated_state")
+valid_uuid "$new_vless_uuid" && [[ "$new_vless_uuid" != "$old_vless_uuid" ]] || exit 1
+delete_protocol vmess
+jq -e '.protocols.vmess.enabled==false and .protocols.vmess.port==0 and (.protocols.vmess.path|startswith("/")) and .certificates.default != null' <<<"$rotated_state" >/dev/null || exit 1
+eval "$saved_rotation_apply"
+eval "$saved_rotation_confirm"
+
 anytls_link=$(grep '^anytls://' "$TEST_ROOT/four/subscription.txt")
 [[ "$anytls_link" == *"&pcs=${expected_der_pin}"* && "$anytls_link" != *'insecure='* ]]
 jq -e --arg pin "$expected_spki_pin" '
@@ -444,7 +461,7 @@ saved_apply_state=$(declare -f apply_state)
 apply_calls=0
 apply_state(){ apply_calls=$((apply_calls + 1)); }
 set_protocol vless name '节点名称：' <<<""
-set_uuid vless <<<"0"
+set_uuid_manual vless <<<"0"
 set_bool vmess tls <<<"0"
 set_number hy2 up_mbps '上行 Mbps：' <<<"0"
 set_port vless <<<"0"

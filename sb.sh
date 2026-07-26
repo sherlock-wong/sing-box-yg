@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.10'
+SCRIPT_VERSION='v26.7.25-vpnm.11'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -1740,13 +1740,31 @@ set_protocol(){
   candidate=$(jq --arg t "$tag" --arg f "$field" --arg x "$x" '.protocols[$t][$f]=$x' "$STATE_FILE")
   apply_state "$candidate"
 }
-set_uuid(){
+set_uuid_manual(){
   local tag=$1 x candidate
   ask 'UUID（回车/0 返回上一级）：' x
   cancel_input "$x" && return 0
   valid_uuid "$x" || { red 'UUID 格式无效。'; return 0; }
   candidate=$(jq --arg t "$tag" --arg x "$x" '.protocols[$t].uuid=$x' "$STATE_FILE")
   apply_state "$candidate"
+}
+generate_protocol_uuid(){ "$STATE_DIR/sing-box" generate uuid 2>/dev/null; }
+rotate_protocol_uuid(){
+  local tag=$1 uuid
+  uuid=$(generate_protocol_uuid)
+  valid_uuid "$uuid" || { red 'UUID 随机生成失败。'; return 0; }
+  confirm_change "确认随机生成新的 $(protocol_label "$tag") UUID？" \
+    '现有节点链接会失效；应用成功后请重新导入订阅。' || return 0
+  apply_state "$(jq --arg t "$tag" --arg x "$uuid" '.protocols[$t].uuid=$x' "$STATE_FILE")"
+}
+set_password_manual(){ set_protocol "$1" password '密码：'; }
+rotate_protocol_password(){
+  local tag=$1 password
+  password=$(openssl rand -hex 16 2>/dev/null || true)
+  [[ "$password" =~ ^[0-9a-f]{32}$ ]] || { red '密码随机生成失败。'; return 0; }
+  confirm_change "确认随机生成新的 $(protocol_label "$tag") 密码？" \
+    '现有节点链接会失效；应用成功后请重新导入订阅。' || return 0
+  apply_state "$(jq --arg t "$tag" --arg x "$password" '.protocols[$t].password=$x' "$STATE_FILE")"
 }
 set_bool(){
   local tag=$1 field=$2 x value candidate
@@ -2917,6 +2935,48 @@ toggle_protocol(){
   fi
   apply_state "$state"
 }
+reset_protocol_state(){ # tag -> state JSON with the protocol reset but retained in the schema as disabled
+  local tag=$1 uuid password pair priv pub sid
+  case "$tag" in
+    vless)
+      uuid=$(generate_protocol_uuid)
+      pair=$("$STATE_DIR/sing-box" generate reality-keypair 2>/dev/null)
+      priv=$(awk -F': ' '/PrivateKey/{print $2}' <<<"$pair")
+      pub=$(awk -F': ' '/PublicKey/{print $2}' <<<"$pair")
+      sid=$(openssl rand -hex 4 2>/dev/null || true)
+      valid_uuid "$uuid" && [[ "$priv" =~ ^[A-Za-z0-9_-]{43}$ && "$pub" =~ ^[A-Za-z0-9_-]{43}$ && "$sid" =~ ^[0-9a-f]{8}$ ]] || return 1
+      jq --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '
+        .protocols.vless={enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$uuid,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,
+          xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}}
+      ' "$STATE_FILE"
+      ;;
+    vmess)
+      uuid=$(generate_protocol_uuid); valid_uuid "$uuid" || return 1
+      jq --arg uuid "$uuid" '.protocols.vmess={enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$uuid,path:("/"+$uuid+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""}' "$STATE_FILE"
+      ;;
+    hy2)
+      password=$(openssl rand -hex 16 2>/dev/null || true); [[ "$password" =~ ^[0-9a-f]{32}$ ]] || return 1
+      jq --arg password "$password" '.protocols.hy2={enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""}' "$STATE_FILE"
+      ;;
+    anytls)
+      password=$(openssl rand -hex 16 2>/dev/null || true); [[ "$password" =~ ^[0-9a-f]{32}$ ]] || return 1
+      jq --arg password "$password" '.protocols.anytls={enabled:false,engine:"sing-box",name:"anytls",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",padding:{mode:"default",lines:[]}}' "$STATE_FILE"
+      ;;
+    *) return 1;;
+  esac
+}
+delete_protocol(){
+  local tag=$1 label state
+  label=$(protocol_label "$tag")
+  if tag_enabled "$tag" && (( $(enabled_count) <= 1 )); then
+    red '至少保留一个已启用协议；请先启用其他协议，再删除当前协议。'
+    return 0
+  fi
+  confirm_change "确认删除 ${label} 的协议配置？" \
+    '删除会停用该协议、释放端口、重置凭据和专项参数，并移除节点、订阅与脚本管理的 UFW 规则；证书库不会删除。' || return 0
+  state=$(reset_protocol_state "$tag") || { red '生成删除后的默认协议配置失败，原配置未改变。'; return 0; }
+  apply_state "$state"
+}
 
 credential_menu(){
   local tag=$1 choice
@@ -2924,16 +2984,18 @@ credential_menu(){
     menu_header '凭据管理' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 凭据"
     case "$tag" in
       vless|vmess)
-        menu_item 1 '修改 UUID'
+        menu_item 1 '随机生成新的 UUID（推荐）'
+        menu_item 2 '手动输入 UUID'
         menu_back '返回协议设置'
-        ask '请选择 [0-1]：' choice
-        case "$choice" in 1)set_uuid "$tag";;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-2]：' choice
+        case "$choice" in 1)rotate_protocol_uuid "$tag";;2)set_uuid_manual "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       hy2|anytls)
-        menu_item 1 '修改密码'
+        menu_item 1 '随机生成新的密码（推荐）'
+        menu_item 2 '手动输入密码'
         menu_back '返回协议设置'
-        ask '请选择 [0-1]：' choice
-        case "$choice" in 1)set_protocol "$tag" password '密码：';;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-2]：' choice
+        case "$choice" in 1)rotate_protocol_password "$tag";;2)set_password_manual "$tag";;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
   done
@@ -3015,11 +3077,12 @@ protocol_menu(){
       menu_item 4 '修改监听端口'
       menu_item 5 '修改凭据'
       menu_item 6 '专项参数'
+      menu_item 7 '删除协议配置'
       menu_back '返回协议列表'
-      ask '请选择 [0-6]：' choice
+      ask '请选择 [0-7]：' choice
       case "$choice" in
         1) show_protocol_configuration "$tag";;2) toggle_protocol "$tag";;3) set_protocol "$tag" name '节点名称：';;4) set_port "$tag";;
-        5) credential_menu "$tag";;6) specialty_menu "$tag";;0|'') break;;*) red '无效输入。';;
+        5) credential_menu "$tag";;6) specialty_menu "$tag";;7) delete_protocol "$tag";;0|'') break;;*) red '无效输入。';;
       esac
     done
   done
