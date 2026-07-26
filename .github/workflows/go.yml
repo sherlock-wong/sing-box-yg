@@ -1,0 +1,36 @@
+name: Go manager
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - run: go test ./...
+      - run: go vet ./...
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - run: GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sbyg-linux-${{ matrix.goarch }} ./cmd/sbyg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbyg-linux-${{ matrix.goarch }}
+          path: sbyg-linux-${{ matrix.goarch }}

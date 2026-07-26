@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.8'
+SCRIPT_VERSION='v26.7.25-fork.9'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -40,18 +40,7 @@ METACUBEX_GEOIP_SHA256=fad057ea2b145d243383db031b5804836e92de30203f31691e974cb14
 METACUBEX_GEOSITE_ASSET=488939110
 METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa
 REALITY_SCAN_SAMPLES=3
-REALITY_CANDIDATES=(
-  www.cloudflare.com
-  www.microsoft.com
-  www.amazon.com
-  aws.amazon.com
-  www.samsung.com
-  www.nvidia.com
-  www.amd.com
-  www.intel.com
-  www.sony.com
-  dl.google.com
-)
+REALITY_TARGETS_SHA256=be5f4a08310e703d16bd9f0534f697e6f6030eedfaa9819464df5229c052c20f
 
 red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
@@ -290,6 +279,40 @@ download_verified(){ # URL SHA OUT DESCRIPTION
   local url=$1 expected=$2 out=$3 label=$4
   curl --fail --location --retry 2 --proto '=https' --tlsv1.2 -o "$out" "$url" || die "下载失败：$label"
   verify "$out" "$expected" "$label"
+}
+
+reality_targets_file(){ printf '%s/reality-targets.txt\n' "$STATE_DIR"; }
+sync_reality_targets(){
+  local target_file temp
+  target_file=$(reality_targets_file)
+  [[ -s "$target_file" ]] && return 0
+  temp=$(tmpdir)/reality-targets.txt
+  if ! curl --fail --location --retry 2 --proto '=https' --tlsv1.2 -o "$temp" "$FORK_RAW/assets/reality-targets.txt"; then
+    red '无法下载 Reality 候选域名清单。' >&2
+    return 1
+  fi
+  if [[ "$(sha256 "$temp" | awk '{print $1}')" != "$REALITY_TARGETS_SHA256" ]]; then
+    red 'Reality 候选域名清单完整性校验失败。' >&2
+    return 1
+  fi
+  install -d -m 755 "$STATE_DIR"
+  install -m 644 "$temp" "$target_file"
+}
+reality_target_candidates(){ # prints validated local file entries, one per line
+  local target_file raw target count=0
+  target_file=$(reality_targets_file)
+  sync_reality_targets || return 1
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    target=${raw%%#*}; target=${target//[[:space:]]/}
+    [[ -n "$target" ]] || continue
+    valid_host "$target" && [[ "$target" != *:* && ! "$target" =~ ^[0-9.]+$ ]] || {
+      red "Reality 候选域名清单包含无效域名：${target}" >&2
+      return 1
+    }
+    printf '%s\n' "$target"
+    count=$((count + 1))
+  done < "$target_file"
+  ((count > 0)) || { red 'Reality 候选域名清单为空。' >&2; return 1; }
 }
 
 sb_hash(){ # version arch
@@ -1270,9 +1293,13 @@ probe_reality_metadata(){ # host -> TLS-version, ALPN, key-exchange, certificate
   printf '%s\t%s\t%s\t%s\n' "$tls" "$alpn" "$curve" "$cert"
 }
 scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
-  local work host file sample latency metadata tls alpn curve cert successes total min max avg jitter
+  local work host file sample latency metadata tls alpn curve cert successes total min max avg jitter configured
   local -a candidates=("$@") pids=()
-  ((${#candidates[@]})) || candidates=("${REALITY_CANDIDATES[@]}")
+  if ((${#candidates[@]} == 0)); then
+    configured=$(reality_target_candidates) || return 1
+    while IFS= read -r host; do [[ -n "$host" ]] && candidates+=("$host"); done <<<"$configured"
+  fi
+  ((${#candidates[@]})) || { red '未能读取 Reality 候选域名清单。' >&2; return 1; }
   work=$(tmpdir)
   blue "正在从当前 VPS 并发扫描 ${#candidates[@]} 个 Reality 目标，每个采样 ${REALITY_SCAN_SAMPLES} 次..." >&2
   for host in "${candidates[@]}"; do
@@ -1339,10 +1366,11 @@ set_reality_sni(){
   local choice host results candidate
   menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   printf '  当前 SNI：%s\n\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
-  menu_item 1 '扫描 10 个默认目标并选择'
+  menu_item 1 '扫描候选清单并选择（默认 10 个）'
   menu_item 2 '扫描自定义目标'
+  menu_item 3 "查看候选清单位置：$(reality_targets_file)"
   menu_back '返回专项参数'
-  ask '请选择 [0-2]：' choice
+  ask '请选择 [0-3]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1) choose_scanned_reality_sni;;
@@ -1363,6 +1391,12 @@ set_reality_sni(){
         .protocols.vless.xray.mldsa65_verify=""
       ' "$STATE_FILE")
       apply_state "$candidate"
+      ;;
+    3)
+      if sync_reality_targets; then
+        printf '\n'; green '候选清单已就绪；可按“一行一个域名”的格式编辑该文件。'
+        sed -n '1,120p' "$(reality_targets_file)"
+      fi
       ;;
     *) red '无效输入。';;
   esac
@@ -1878,6 +1912,7 @@ install_flow(){
   confirm_change '确认开始安装？' '协议端口将自动选择未占用端口，安装后可随时修改。' ||
     { yellow '安装已取消，系统未做修改。'; return 0; }
   install_packages
+  sync_reality_targets || { red '无法准备经过校验的 Reality 候选域名清单，安装未继续。'; return 0; }
   install_singbox "$core"; install_rule_databases
   state=$(state_for_protocol_tags "$core" "$tags")
   state=$(jq --arg engine "$vless_engine" '.protocols.vless.engine=$engine' <<<"$state")

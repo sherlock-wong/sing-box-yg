@@ -340,9 +340,12 @@ if uninstall <<<"0"; then
 fi
 [[ $apply_calls -eq 0 ]]
 
-# Reality scans all ten 3x-ui v3.4.2 defaults, ranks stability/latency, and applies a selected top-five result.
-[[ ${#REALITY_CANDIDATES[@]} -eq 10 ]]
-[[ ${REALITY_CANDIDATES[0]} == www.cloudflare.com && ${REALITY_CANDIDATES[9]} == dl.google.com ]]
+# Reality reads all ten defaults from the separately maintained candidate file,
+# ranks stability/latency, and applies a selected top-five result.
+cp "$ROOT/assets/reality-targets.txt" "$(reality_targets_file)"
+reality_targets=$(reality_target_candidates)
+[[ $(wc -l <<<"$reality_targets" | tr -d ' ') -eq 10 ]]
+[[ $(head -n1 <<<"$reality_targets") == www.cloudflare.com && $(tail -n1 <<<"$reality_targets") == dl.google.com ]]
 # Binary/NUL bytes in openssl output stay in a temporary file and never enter a Bash variable.
 timeout(){
   printf 'New, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256\nServer Temp Key: X25519, 253 bits\n'

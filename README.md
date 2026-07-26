@@ -53,6 +53,8 @@ SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 VPS 多选协议、运行期增删、订阅、依赖校验和故障处理请见 [VPS_USAGE.md](VPS_USAGE.md)。
 
+`main` 已开始以 Go 逐步拆分 VPS 管理逻辑；Reality 候选域名维护在独立的 [assets/reality-targets.txt](assets/reality-targets.txt)，而不是写死在脚本中。详见 [VPS_USAGE.md](VPS_USAGE.md)。
+
 ### Sing-box-yg脚本界面预览图（注：相关参数随意填写，仅供围观）
 
 ![1d5425c093618313888fe41a55f493f](https://github.com/user-attachments/assets/2b4b04a6-2de4-499a-afa1-ed78bccc50a8)

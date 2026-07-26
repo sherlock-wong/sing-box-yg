@@ -1,0 +1,13 @@
+# Reality target candidates.
+# One hostname per line.  The scanner verifies TLS 1.3, ALPN, certificate
+# validation and measures DNS + TCP + TLS handshake time from the VPS.
+www.cloudflare.com
+www.microsoft.com
+www.amazon.com
+aws.amazon.com
+www.samsung.com
+www.nvidia.com
+www.amd.com
+www.intel.com
+www.sony.com
+dl.google.com
