@@ -297,7 +297,7 @@ main_dashboard(){
     protocols=$(enabled_count 2>/dev/null || printf '0')
   fi
   if realm_install_valid; then
-    realm=$(systemctl is-active "$(realm_service_name)" 2>/dev/null || printf '未运行')
+    realm=$(realm_runtime_status)
   fi
   menu_header "VPS Net Manager ${SCRIPT_VERSION}" '主菜单'
   printf '  渠道：%-18s 服务：%s\n' "$FORK_BRANCH" "$(service_runtime_status)"
@@ -460,6 +460,13 @@ realm_binary(){ printf '%s/realm\n' "$(realm_dir)"; }
 realm_state_file(){ printf '%s/rules.json\n' "$(realm_dir)"; }
 realm_config_file(){ printf '%s/config.toml\n' "$(realm_dir)"; }
 realm_service_name(){ printf 'vps-net-manager-realm.service\n'; }
+realm_runtime_status(){
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$(realm_service_name)" 2>/dev/null; then
+    printf '运行'
+  else
+    printf '未运行'
+  fi
+}
 realm_supported_os(){
   local id=
   [[ -r /etc/os-release ]] || return 1
@@ -653,7 +660,7 @@ realm_add_rule(){
 realm_list_rules(){
   local id listen_host listen_port remote_host remote_port
   realm_install_valid || { yellow 'Realm 未安装。'; return 0; }
-  printf 'Realm %s，服务：%s\n' "$REALM_VERSION" "$(systemctl is-active "$(realm_service_name)" 2>/dev/null || printf '未运行')"
+  printf 'Realm %s，服务：%s\n' "$REALM_VERSION" "$(realm_runtime_status)"
   printf '%-16s %-28s %s\n' '规则 ID' '监听（TCP+UDP）' '目标'
   while IFS=$'\t' read -r id listen_host listen_port remote_host remote_port; do
     printf '%-16s %-28s %s\n' "$id" "$(realm_endpoint_address "$listen_host" "$listen_port")" "$(realm_endpoint_address "$remote_host" "$remote_port")"
@@ -668,6 +675,30 @@ realm_delete_rule(){
   confirm_change "确认删除 Realm 规则 ${id}？" '删除后将停止该端口的 TCP/UDP 转发，并移除脚本创建的 UFW 规则。' || return 0
   candidate=$(jq --arg id "$id" '.rules |= map(select(.id!=$id))' "$(realm_state_file)")
   printf '%s\n' "$candidate" | realm_apply_state
+}
+realm_start(){
+  local rules state
+  realm_require_supported || return 0
+  realm_install_valid || { red 'Realm 未安装或完整性标记无效，请先选择安装/更新。'; return 0; }
+  [[ -r "$(realm_state_file)" ]] || { red '未找到 Realm 规则状态，请先添加至少一条规则。'; return 0; }
+  state=$(realm_normalize_state < "$(realm_state_file)") || { red 'Realm 规则状态无法读取。'; return 0; }
+  realm_validate_state "$state" || { red 'Realm 规则状态无效，请检查规则后重试。'; return 0; }
+  rules=$(jq -r '.rules|length' <<<"$state")
+  ((rules > 0)) || { yellow 'Realm 没有转发规则，添加至少一条规则后才能启动。'; return 0; }
+  realm_write_service || { red '无法写入 Realm systemd 服务。'; return 0; }
+  if systemctl is-active --quiet "$(realm_service_name)"; then
+    yellow 'Realm 服务已在运行。'
+  elif systemd_enable_restart "$(realm_service_name)"; then
+    green 'Realm 服务已启动，并已设为开机启动。'
+  else
+    red 'Realm 启动失败；规则和配置未改变，请查看 Realm 日志。'
+  fi
+}
+realm_stop(){
+  realm_require_supported || return 0
+  realm_install_valid || { red 'Realm 未安装。'; return 0; }
+  systemd_stop_disable "$(realm_service_name)"
+  green 'Realm 服务已停止，并已取消开机启动；转发规则仍已保留。'
 }
 realm_uninstall(){
   local x dir
@@ -691,15 +722,18 @@ realm_menu(){
     menu_item 2 '添加端口转发规则'
     menu_item 3 '查看规则与服务状态'
     menu_item 4 '删除端口转发规则'
-    menu_item 5 '重启 Realm 服务'
-    menu_item 6 '查看 Realm 日志'
-    menu_item 7 '卸载 Realm 与全部规则'
+    menu_item 5 '启动 Realm 服务（设为开机启动）'
+    menu_item 6 '停止 Realm 服务（保留规则）'
+    menu_item 7 '重启 Realm 服务'
+    menu_item 8 '查看 Realm 日志'
+    menu_item 9 '卸载 Realm 与全部规则'
     menu_back '返回主菜单'
-    ask '请选择 [0-7]：' choice
+    ask '请选择 [0-9]：' choice
     case "$choice" in
       1)realm_install;;2)realm_add_rule;;3)realm_list_rules;;4)realm_delete_rule;;
-      5)realm_install_valid && systemd_enable_restart "$(realm_service_name)" || red 'Realm 未安装或重启失败。';;
-      6)journalctl -u "$(realm_service_name)" -n 100 --no-pager;;7)realm_uninstall;;
+      5)realm_start;;6)realm_stop;;
+      7)realm_install_valid && systemd_enable_restart "$(realm_service_name)" || red 'Realm 未安装或重启失败。';;
+      8)journalctl -u "$(realm_service_name)" -n 100 --no-pager;;9)realm_uninstall;;
       0|'')return 0;;*)red '无效输入。';;
     esac
   done

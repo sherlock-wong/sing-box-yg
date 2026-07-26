@@ -61,7 +61,9 @@ AnyTLS 应使用自己的域名和匹配证书。Cloudflare DNS 记录应为“�
 2. 选择 `2` 添加规则，依次输入监听地址（直接回车默认 `0.0.0.0`）、监听端口、目标地址和目标端口。
 3. 例如：`0.0.0.0:40000 → 203.0.113.10:443`。
 
-每条规则固定同时转发 TCP 与 UDP。UFW 启用时，项目会管理对应的 TCP/UDP 放行规则。规则状态在 `/etc/vps-net-manager/realm/rules.json`，生成的配置在 `/etc/vps-net-manager/realm/config.toml`，systemd 单元是 `vps-net-manager-realm.service`。菜单还提供查看、删除、重启、日志和完整卸载；重启失败会回滚规则和本次新加的 UFW 放行。
+每条规则固定同时转发 TCP 与 UDP。UFW 启用时，项目会管理对应的 TCP/UDP 放行规则。规则状态在 `/etc/vps-net-manager/realm/rules.json`，生成的配置在 `/etc/vps-net-manager/realm/config.toml`，systemd 单元是 `vps-net-manager-realm.service`。
+
+添加规则会自动启动 Realm。之后可在 Realm 菜单选择“启动”（同时设为开机启动）、“停止”（保留规则但取消开机启动）、“重启”、查看日志或完整卸载；启动或重启失败会保留原规则并提示查看日志。
 
 ## 7. 防火墙、内核与运维
 
