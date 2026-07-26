@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.19'
+SCRIPT_VERSION='v26.7.25-vpnm.20'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -39,6 +39,7 @@ CLOUDFLARED_VERSION=2026.7.3
 CLOUDFLARED_AMD64_SHA256=9d71c677db00134c1bd4144b7783486b654ad281b1ea62b4972098d19f770f17
 CLOUDFLARED_ARM64_SHA256=65259e652a7bea08bf5df603233ab22b8bf3116af8df9f9206209af6a1b955c0
 REALITY_SCAN_SAMPLES=3
+REALITY_SCAN_CONCURRENCY=6
 REALITY_TARGETS_SHA256=eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda
 ANYTLS_DEFAULT_PADDING='["stop=8","0=30-30","1=100-400","2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000","3=9-9,500-1000","4=500-1000","5=500-1000","6=500-1000","7=500-1000"]'
 REALM_VERSION=2.9.4
@@ -2029,7 +2030,7 @@ probe_reality_metadata(){ # host -> grade 2=recommended,1=available,0=rejected; 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$grade" "$reason" "${tls:--}" "${alpn:--}" "${curve:--}" "$cert"
 }
 scan_reality_candidates(){ # outputs host, grade, reason, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
-  local work host file sample latency metadata grade reason tls alpn curve cert successes total min max avg jitter configured
+  local work host file sample latency metadata grade reason tls alpn curve cert successes total min max avg jitter configured max_workers
   local -a candidates=("$@") pids=()
   if ((${#candidates[@]} == 0)); then
     configured=$(reality_target_candidates) || return 1
@@ -2037,7 +2038,10 @@ scan_reality_candidates(){ # outputs host, grade, reason, successes, average-ms,
   fi
   ((${#candidates[@]})) || { red '未能读取 Reality 候选域名清单。' >&2; return 1; }
   work=$(tmpdir)
-  blue "正在从当前 VPS 并发扫描 ${#candidates[@]} 个 Reality 目标，每个采样 ${REALITY_SCAN_SAMPLES} 次..." >&2
+  max_workers=$REALITY_SCAN_CONCURRENCY
+  [[ "$max_workers" =~ ^[1-9][0-9]*$ ]] || max_workers=6
+  (( max_workers <= ${#candidates[@]} )) || max_workers=${#candidates[@]}
+  blue "正在从当前 VPS 分批扫描 ${#candidates[@]} 个 Reality 目标，最大并发 ${max_workers}，每个采样 ${REALITY_SCAN_SAMPLES} 次..." >&2
   for host in "${candidates[@]}"; do
     file="$work/$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_').result"
     (
@@ -2070,6 +2074,10 @@ scan_reality_candidates(){ # outputs host, grade, reason, successes, average-ms,
         "$host" "$grade" "$reason" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
     ) &
     pids+=("$!")
+    if ((${#pids[@]} >= max_workers)); then
+      wait "${pids[0]}" || true
+      pids=("${pids[@]:1}")
+    fi
   done
   for sample in "${pids[@]}"; do wait "$sample" || true; done
   # Show every configured target. Recommended targets sort first, then usable ones.
