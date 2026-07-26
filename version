@@ -1,3 +1,7 @@
+v26.7.25-fork.10 更新内容：
+
+VPS fork：修正 Reality 扫描结果的中文表头与 ASCII 数据列对齐；终端宽度计算会补偿中文字符显示宽度。
+
 v26.7.25-fork.9 更新内容：
 
 VPS fork：开始按兼容方式迁移到 Go；新增可测试的 Reality 候选清单与并发扫描模块、Linux 双架构 CI 构建。Reality 候选域名改为校验后部署到 `/etc/s-box/reality-targets.txt` 的独立清单，扫描时从该文件读取，支持注释和本机维护。

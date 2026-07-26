@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.9'
+SCRIPT_VERSION='v26.7.25-fork.10'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -1339,8 +1339,10 @@ choose_scanned_reality_sni(){
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
   menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   dim '延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动。'
-  printf '%-3s %-23s %-5s %-4s %-5s %-18s %-24s %-8s %-8s %-5s\n' \
-    '序号' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
+  # printf counts UTF-8 bytes, while CJK characters take two terminal cells.
+  # The compensated widths below keep the Chinese header over its ASCII data.
+  printf '%-4s %-25s %-7s %-4s %-5s %-22s %-26s%10s%10s%7s\n' \
+    '序' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
   for ((i=0; i<${#rows[@]}; i++)); do
     IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
     printf '%-3d %-23s %-5s %-4s %-5s %-18s %-24s %4d ms %4d ms %d/%d\n' \
