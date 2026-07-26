@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.18'
+SCRIPT_VERSION='v26.7.25-vpnm.19'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -2129,6 +2129,29 @@ apply_reality_sni(){ # validated host
   ' "$STATE_FILE")
   apply_state "$candidate"
 }
+confirm_scanned_custom_reality_target(){ # one scan result row; returns 0 only after explicit approval
+  local result=$1 host grade reason successes avg jitter tls alpn curve cert status detail
+  IFS=$'\t' read -r host grade reason successes avg jitter tls alpn curve cert <<<"$result"
+  menu_header '自定义 Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
+  dim '延迟为当前 VPS 的 DNS、TCP 与 TLS 握手耗时；以下是刚才指定目标的完整检测结果。'
+  printf '%-27s %-7s %-4s %-5s %-20s %-28s %-11s %-11s %-9s\n' \
+    '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
+  if [[ "$grade" == 0 ]]; then
+    printf '%-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
+      "$(clip_cell "$host" 25)" '不可' "$tls" "$(clip_cell "$alpn" 5)" "$(clip_cell "$curve" 16)" "$(clip_cell "$cert" 26)" '-' '-' "${successes}/${REALITY_SCAN_SAMPLES}"
+    red "该目标不可使用：${reason}。"
+    return 1
+  fi
+  [[ "$grade" == 2 ]] && status='推荐' || status='可用'
+  printf '%-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
+    "$(clip_cell "$host" 25)" "$status" "$tls" "$(clip_cell "$alpn" 5)" "$(clip_cell "$curve" 16)" "$(clip_cell "$cert" 26)" "${avg} ms" "${jitter} ms" "${successes}/${REALITY_SCAN_SAMPLES}"
+  if [[ "$grade" == 2 ]]; then
+    detail='该目标通过证书/SNI、TLS 1.3、h2、X25519 与稳定性检查。'
+  else
+    detail="${reason}；建议优先选择“推荐”级目标。"
+  fi
+  confirm_change "确认使用扫描目标 ${host}？" "$detail"
+}
 set_reality_sni(){
   local choice host results candidate
   menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
@@ -2151,10 +2174,7 @@ set_reality_sni(){
       [[ "$host" != *:* && ! "$host" =~ ^[0-9.]+$ ]] || { red 'Reality SNI 必须填写域名。'; return 0; }
       results=$(scan_reality_candidates "$host") || true
       [[ -n "$results" ]] || { red '该目标未产生扫描结果，原配置未改变。'; return 0; }
-      IFS=$'\t' read -r _ grade reason _ <<<"$results"
-      [[ "$grade" != 0 ]] || { red "该目标不可选：${reason}。原配置未改变。"; return 0; }
-      [[ "$grade" == 2 ]] ||
-        confirm_change "确认使用基础可用目标 ${host}？" "$reason；推荐优先选择“推荐”级目标。" || return 0
+      confirm_scanned_custom_reality_target "$results" || return 0
       apply_reality_sni "$host"
       ;;
     3)

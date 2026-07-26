@@ -651,6 +651,26 @@ set_reality_sni <<< $'3\ndirect.example'
 eval "$saved_apply_state"
 eval "$saved_confirm_change"
 
+# A custom target scan displays its measurements and requires a separate
+# confirmation before it can replace the active Reality target.
+saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
+saved_apply_state=$(declare -f apply_state)
+saved_confirm_change=$(declare -f confirm_change)
+captured_state=
+confirmed_target=
+apply_state(){ captured_state=$1; }
+confirm_change(){ confirmed_target=$1; return 0; }
+scan_reality_candidates(){ printf 'custom.example\t2\t满足严格推荐条件与稳定性检测\t3\t38\t4\t1.3\th2\tX25519\tcustom.example\n'; }
+custom_scan_output="$TEST_ROOT/custom-scan.out"
+set_reality_sni <<< $'2\ncustom.example' > "$custom_scan_output"
+grep -q '自定义 Reality 目标扫描结果' "$custom_scan_output"
+grep -q '平均' "$custom_scan_output"
+[[ "$confirmed_target" == '确认使用扫描目标 custom.example？' ]]
+[[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == custom.example ]]
+eval "$saved_scan_reality_candidates"
+eval "$saved_apply_state"
+eval "$saved_confirm_change"
+
 # The domain-certificate wizard reuses a matching certificate or validates ACME output before adding it to the library.
 saved_find_domain_certificate=$(declare -f find_domain_certificate)
 saved_store_trusted_domain_certificate=$(declare -f store_trusted_domain_certificate)
