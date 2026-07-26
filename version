@@ -8,6 +8,8 @@ VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命
 
 改进：证书库与协议绑定解耦。主菜单 `7` 只申请、导入、查看和维护证书；域名证书入库后不会自动修改协议。每个普通 TLS 协议在自身专项参数中从证书库选择所需证书。
 
+改进：普通 TLS 协议修改证书域名时会筛选证书库中 SAN 覆盖该域名的有效证书，必须选择匹配项才能应用；协议操作菜单新增“查看当前协议配置”。
+
 当前功能：按需管理 Sing-box 协议、可选 Xray-core Reality、Reality 目标扫描、证书库、AnyTLS、Hysteria2、Vmess-WS、WARP、TCP/BBR 与 Realm 端口转发。
 
 范围：仅 VPS；不包含 Serv00、Hostuno、保活网页或多用户面板功能。

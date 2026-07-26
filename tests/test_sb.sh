@@ -372,7 +372,7 @@ set_xray_fallback_profile <<<"0"
 set_xray_mldsa65 <<<"0"
 toggle_protocol vless <<<"0"
 update_core <<<"0"
-protocol_menu <<< $'1\n5\n0\n0\n0'
+protocol_menu <<< $'1\n6\n0\n0\n0'
 if uninstall <<<"0"; then
   echo 'cancelled uninstall unexpectedly succeeded' >&2
   exit 1
@@ -554,6 +554,15 @@ apply_state(){ captured_state=$1; }
 hy2_cert_index=$(jq '.certificates | to_entries | map(.key) | index("hy2") + 1' "$STATE_FILE")
 select_certificate_for_protocol anytls <<< "${hy2_cert_index}"$'\nhy2.example.com'
 jq -e '.protocols.anytls.certificate_id=="hy2" and .protocols.anytls.domain=="hy2.example.com"' <<<"$captured_state" >/dev/null
+
+# Editing a normal TLS domain must select a valid SAN-matching library entry;
+# an unknown domain must leave the current protocol state untouched.
+captured_state=
+set_tls_domain anytls <<< $'hy2.example.com\n1'
+jq -e '.protocols.anytls.certificate_id=="hy2" and .protocols.anytls.domain=="hy2.example.com"' <<<"$captured_state" >/dev/null
+captured_state=
+set_tls_domain anytls <<< 'missing.example.com'
+[[ -z "$captured_state" ]]
 eval "$saved_apply_state"
 
 # Adding a validated domain certificate keeps protocol bindings unchanged.

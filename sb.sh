@@ -2218,23 +2218,52 @@ show_certificate(){
     else yellow '当前证书文件不可读。'; fi
   done < <(jq -r '.certificates | to_entries[] | [.key,.value.name,.value.cert,(.value.mode // (if .value.insecure then "pinned" else "trusted" end))] | @tsv' "$STATE_FILE")
 }
+certificate_rows_covering_domain(){ # domain -> id<TAB>name<TAB>mode<TAB>cert
+  local domain=$1 id name mode cert key
+  while IFS=$'\t' read -r id name mode cert key; do
+    certificate_pair_valid "$cert" "$key" || continue
+    certificate_matches_domain "$cert" "$domain" || continue
+    printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$mode" "$cert"
+  done < <(jq -r '.certificates | to_entries[] | [.key,.value.name,(.value.mode // (if .value.insecure then "pinned" else "trusted" end)),.value.cert,.value.key] | @tsv' "$STATE_FILE")
+}
 set_tls_domain(){
-  local tag=$1 domain cert insecure candidate cert_id
+  local tag=$1 domain candidate choice index id name mode cert certificate_row
+  local -a certificate_rows=()
   ask '证书域名（回车/0 返回上一级）：' domain
   cancel_input "$domain" && return 0
   valid_host "$domain" && [[ "$domain" != *:* && ! "$domain" =~ ^[0-9.]+$ ]] || { red '必须填写有效域名。'; return 0; }
-  cert_id=$(certificate_id_for_tag "$tag")
-  cert=$(jq -r --arg id "$cert_id" '.certificates[$id].cert' "$STATE_FILE")
-  insecure=$(jq -r --arg id "$cert_id" '.certificates[$id].insecure' "$STATE_FILE")
-  if [[ -r "$cert" ]] && ! certificate_matches_domain "$cert" "$domain"; then
-    if [[ "$insecure" == false ]]; then
-      red '当前受信证书不覆盖该域名，拒绝修改。请先导入匹配证书。'
-      return 0
-    fi
-    yellow '当前为自签证书固定模式；域名不在 SAN 中，但客户端将校验证书固定值。'
-  fi
-  candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
+  while IFS= read -r certificate_row; do certificate_rows+=("$certificate_row"); done < <(certificate_rows_covering_domain "$domain")
+  ((${#certificate_rows[@]})) || {
+    red "证书库中没有 SAN 覆盖 ${domain} 的有效证书，原协议配置未改变。"
+    yellow '请先通过主菜单 7 申请或导入该域名证书。'
+    return 0
+  }
+  echo "以下证书覆盖 ${domain}，请选择要绑定到 $(protocol_label "$tag") 的证书："
+  for ((index=0; index<${#certificate_rows[@]}; index++)); do
+    IFS=$'\t' read -r id name mode cert <<<"${certificate_rows[$index]}"
+    printf '%d %s [%s] %s\n' "$((index + 1))" "$name" "$mode" "$cert"
+  done
+  menu_back '返回协议设置'
+  ask '请选择证书：' choice
+  cancel_input "$choice" && return 0
+  [[ "$choice" =~ ^[1-9][0-9]*$ && "$choice" -le "${#certificate_rows[@]}" ]] || { red '无效输入。'; return 0; }
+  IFS=$'\t' read -r id name mode cert <<<"${certificate_rows[$((choice - 1))]}"
+  candidate=$(jq --arg t "$tag" --arg d "$domain" --arg id "$id" '.protocols[$t].domain=$d | .protocols[$t].certificate_id=$id' "$STATE_FILE")
   apply_state "$candidate"
+}
+show_protocol_configuration(){ # protocol tag
+  local tag=$1 cert_id
+  menu_header '当前协议配置' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 查看配置"
+  case "$tag" in
+    vless) jq '.protocols.vless' "$STATE_FILE";;
+    vmess|hy2|anytls)
+      cert_id=$(certificate_id_for_tag "$tag")
+      jq --arg t "$tag" --arg id "$cert_id" '{protocol:.protocols[$t],certificate_id:$id,certificate:.certificates[$id]}' "$STATE_FILE"
+      ;;
+    *) red '未知协议。'; return 0;;
+  esac
+  echo
+  read -r -p '按回车返回协议设置：' _
 }
 select_certificate_for_protocol(){ # protocol tag
   local tag=$1 index choice id name mode cert domain candidate new_domain key certificate_row
@@ -2494,16 +2523,17 @@ protocol_menu(){
       printf '  状态：%s   端口：%s/%s\n\n' \
         "$([[ "$action" == 停用协议 ]] && printf '已启用' || printf '未启用')" \
         "${port:-未分配}" "$(protocol_transport "$tag")"
-      menu_item 1 "$action"
-      menu_item 2 '修改节点名称'
-      menu_item 3 '修改监听端口'
-      menu_item 4 '修改凭据'
-      menu_item 5 '专项参数'
+      menu_item 1 '查看当前协议配置'
+      menu_item 2 "$action"
+      menu_item 3 '修改节点名称'
+      menu_item 4 '修改监听端口'
+      menu_item 5 '修改凭据'
+      menu_item 6 '专项参数'
       menu_back '返回协议列表'
-      ask '请选择 [0-5]：' choice
+      ask '请选择 [0-6]：' choice
       case "$choice" in
-        1) toggle_protocol "$tag";;2) set_protocol "$tag" name '节点名称：';;3) set_port "$tag";;
-        4) credential_menu "$tag";;5) specialty_menu "$tag";;0|'') break;;*) red '无效输入。';;
+        1) show_protocol_configuration "$tag";;2) toggle_protocol "$tag";;3) set_protocol "$tag" name '节点名称：';;4) set_port "$tag";;
+        5) credential_menu "$tag";;6) specialty_menu "$tag";;0|'') break;;*) red '无效输入。';;
       esac
     done
   done
