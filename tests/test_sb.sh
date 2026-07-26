@@ -336,6 +336,13 @@ reconcile_core_services "$zero_state"
 [[ "$systemctl_calls" == $'disable --now vps-net-manager\ndisable --now vps-net-manager-xray\n' ]] || exit 1
 unset -f systemctl
 
+# Viewing nodes with zero enabled protocols is a normal state and must return
+# to the caller instead of letting `set -e` terminate the manager.
+printf '%s\n' "$zero_state" > "$STATE_FILE"
+zero_nodes=$(show_nodes)
+[[ "$zero_nodes" == *'当前没有已启用协议'* ]]
+printf '%s\n' "$four_state" > "$STATE_FILE"
+
 # Credential rotation defaults to generated material, while deleting a protocol
 # resets only that protocol and leaves the certificate library intact.
 saved_rotation_apply=$(declare -f apply_state)

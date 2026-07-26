@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.14'
+SCRIPT_VERSION='v26.7.25-vpnm.15'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -1471,11 +1471,22 @@ generate_subscriptions(){
 }
 
 show_nodes(){
-  [[ -f "$STATE_FILE" ]] || return
+  [[ -f "$STATE_FILE" ]] || return 0
   menu_header '节点与完整配置' '主菜单 / 配置 / 查看节点'
   dim '仅显示已启用协议；服务监听地址始终为 ::。'
+  if (( $(enabled_count) == 0 )); then
+    yellow '当前没有已启用协议，因此没有节点或分享链接可显示。'
+    dim '可通过“管理协议”添加或启用协议；此页面将自动显示新的节点链接。'
+    return 0
+  fi
   jq '{public_address,certificates,protocols:(.protocols|with_entries(select(.value.enabled)))}' "$STATE_FILE"
-  [[ -s "$STATE_DIR/subscription.txt" ]] && { echo; cat "$STATE_DIR/subscription.txt"; }
+  if [[ -s "$STATE_DIR/subscription.txt" ]]; then
+    echo
+    cat "$STATE_DIR/subscription.txt"
+  else
+    yellow '当前订阅文件为空；请在配置菜单选择“重新生成订阅”。'
+  fi
+  return 0
 }
 show_qr(){ need qrencode; [[ -s "$STATE_DIR/subscription.txt" ]] || generate_subscriptions; while IFS= read -r link; do qrencode -t ANSIUTF8 "$link"; done < "$STATE_DIR/subscription.txt"; }
 
