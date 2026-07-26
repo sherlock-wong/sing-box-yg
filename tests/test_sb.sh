@@ -150,7 +150,7 @@ enable_tags(){
   shift
   for tag in "$@"; do
     port=$((port + 1))
-    state=$(jq --arg tag "$tag" --argjson port "$port" '.protocols[$tag].enabled=true | .protocols[$tag].port=$port' <<<"$state")
+    state=$(jq --arg tag "$tag" --argjson port "$port" '.protocols[$tag].configured=true | .protocols[$tag].enabled=true | .protocols[$tag].port=$port' <<<"$state")
   done
   printf '%s\n' "$state"
 }
@@ -320,7 +320,7 @@ rotate_protocol_uuid vless
 new_vless_uuid=$(jq -r '.protocols.vless.uuid' <<<"$rotated_state")
 valid_uuid "$new_vless_uuid" && [[ "$new_vless_uuid" != "$old_vless_uuid" ]] || exit 1
 delete_protocol vmess
-jq -e '.protocols.vmess.enabled==false and .protocols.vmess.port==0 and (.protocols.vmess.path|startswith("/")) and .certificates.default != null' <<<"$rotated_state" >/dev/null || exit 1
+jq -e '.protocols.vmess.configured==false and .protocols.vmess.enabled==false and .protocols.vmess.port==0 and (.protocols.vmess.path|startswith("/")) and .certificates.default != null' <<<"$rotated_state" >/dev/null || exit 1
 eval "$saved_rotation_apply"
 eval "$saved_rotation_confirm"
 

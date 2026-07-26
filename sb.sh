@@ -115,6 +115,7 @@ normalize_state(){ # normalize current schema defaults before validation/renderi
     .protocols.vmess.engine = "sing-box" |
     .protocols.hy2.engine = "sing-box" |
     .protocols.anytls.engine = "sing-box" |
+    .protocols |= with_entries(.value.configured = (.value.configured // false)) |
     .protocols.vless.xray = ({
       target:((.protocols.vless.sni // "www.apple.com")+":443"),
       server_names:[(.protocols.vless.sni // "www.apple.com")],
@@ -172,6 +173,7 @@ trap cleanup_tmp EXIT
 cpu(){ case "$(uname -m)" in x86_64) echo amd64;; aarch64) echo arm64;; *) die "不支持的 CPU：$(uname -m)";; esac; }
 json(){ jq -e . "$1" >/dev/null; }
 tag_enabled(){ jq -e --arg t "$1" '.protocols[$t].enabled == true' "$STATE_FILE" >/dev/null; }
+tag_configured(){ jq -e --arg t "$1" '.protocols[$t].configured == true' "$STATE_FILE" >/dev/null; }
 enabled_count(){ jq '[.protocols[] | select(.enabled)] | length' "$STATE_FILE"; }
 random_port(){ local n; n=$(od -An -N4 -tu4 /dev/urandom | tr -d ' '); printf '%s\n' "$((10000 + n % 55536))"; }
 valid_port(){ [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( $1 <= 65535 )); }
@@ -280,7 +282,10 @@ protocol_detail(){
 }
 protocol_status_line(){
   local index=$1 tag=$2 line port
-  if tag_enabled "$tag"; then
+  if ! tag_configured "$tag"; then
+    printf -v line '  %s. %-16s [未添加]' "$index" "$(protocol_label "$tag")"
+    dim "$line"
+  elif tag_enabled "$tag"; then
     port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
     printf -v line '  %s. %-16s [已启用] %-3s %-5s  %s' \
       "$index" "$(protocol_label "$tag")" "$(protocol_transport "$tag")" "$port" "$(protocol_detail "$tag")"
@@ -869,7 +874,7 @@ new_state(){
     -addext 'extendedKeyUsage=serverAuth' \
     -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
   jq -n --arg core "$core" --arg xray "$XRAY_DEFAULT" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" --arg tlsdomain "$tls_domain" \
-    '{schema:4,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:$tlsdomain,certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",padding:{mode:"default",lines:[]}}},certificates:{default:{name:("初始固定证书（"+$tlsdomain+"）"),cert:$cert,key:$key,mode:"pinned",insecure:true,source:{type:"snapshot",auto_sync:false}}}}'
+    '{schema:4,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{configured:false,enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{configured:false,enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:$tlsdomain,certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{configured:false,enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{configured:false,enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",padding:{mode:"default",lines:[]}}},certificates:{default:{name:("初始固定证书（"+$tlsdomain+"）"),cert:$cert,key:$key,mode:"pinned",insecure:true,source:{type:"snapshot",auto_sync:false}}}}'
 }
 
 choose_protocol_tags(){ # core -> space-separated tags
@@ -1055,7 +1060,7 @@ state_for_protocol_tags(){ # core "tag tag ..." [settings JSON] -> JSON state
       done
     fi
     state=$(jq --arg t "$tag" --argjson p "$p" \
-      '.protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
+      '.protocols[$t].configured=true | .protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
   done
   state=$(jq --arg sni "$reality_sni" --arg address "$public_address" '
     .public_address=$address |
@@ -2584,6 +2589,12 @@ set_tls_domain(){
 show_protocol_configuration(){ # protocol tag
   local tag=$1 cert_id
   menu_header '当前协议配置' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 查看配置"
+  if ! tag_configured "$tag"; then
+    yellow "$(protocol_label "$tag") 尚未添加，没有可查看的端口、凭据或专项参数。"
+    dim '请选择“添加协议”后再进行配置。'
+    read -r -p '按回车返回协议设置：' _
+    return 0
+  fi
   case "$tag" in
     vless) jq '.protocols.vless' "$STATE_FILE";;
     vmess|hy2|anytls)
@@ -2931,7 +2942,7 @@ toggle_protocol(){
     confirm_change "确认启用 ${label}？" \
       "将使用 $(protocol_transport "$tag") 端口 ${p}，并同步配置、节点、订阅和 UFW（如已启用）。" || return 0
     state=$(jq --arg t "$tag" --argjson p "$p" --arg hop "${ACTIVATION_HY2_HOP:-}" \
-      '.protocols[$t].port=$p | .protocols[$t].enabled=true | if $t=="hy2" then .protocols.hy2.udp_hop=$hop else . end' "$STATE_FILE")
+      '.protocols[$t].configured=true | .protocols[$t].port=$p | .protocols[$t].enabled=true | if $t=="hy2" then .protocols.hy2.udp_hop=$hop else . end' "$STATE_FILE")
   fi
   apply_state "$state"
 }
@@ -2946,21 +2957,21 @@ reset_protocol_state(){ # tag -> state JSON with the protocol reset but retained
       sid=$(openssl rand -hex 4 2>/dev/null || true)
       valid_uuid "$uuid" && [[ "$priv" =~ ^[A-Za-z0-9_-]{43}$ && "$pub" =~ ^[A-Za-z0-9_-]{43}$ && "$sid" =~ ^[0-9a-f]{8}$ ]] || return 1
       jq --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" '
-        .protocols.vless={enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$uuid,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,
+        .protocols.vless={configured:false,enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$uuid,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,
           xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}}
       ' "$STATE_FILE"
       ;;
     vmess)
       uuid=$(generate_protocol_uuid); valid_uuid "$uuid" || return 1
-      jq --arg uuid "$uuid" '.protocols.vmess={enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$uuid,path:("/"+$uuid+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""}' "$STATE_FILE"
+      jq --arg uuid "$uuid" '.protocols.vmess={configured:false,enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$uuid,path:("/"+$uuid+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""}' "$STATE_FILE"
       ;;
     hy2)
       password=$(openssl rand -hex 16 2>/dev/null || true); [[ "$password" =~ ^[0-9a-f]{32}$ ]] || return 1
-      jq --arg password "$password" '.protocols.hy2={enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""}' "$STATE_FILE"
+      jq --arg password "$password" '.protocols.hy2={configured:false,enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""}' "$STATE_FILE"
       ;;
     anytls)
       password=$(openssl rand -hex 16 2>/dev/null || true); [[ "$password" =~ ^[0-9a-f]{32}$ ]] || return 1
-      jq --arg password "$password" '.protocols.anytls={enabled:false,engine:"sing-box",name:"anytls",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",padding:{mode:"default",lines:[]}}' "$STATE_FILE"
+      jq --arg password "$password" '.protocols.anytls={configured:false,enabled:false,engine:"sing-box",name:"anytls",port:0,password:$password,domain:"www.bing.com",certificate_id:"default",padding:{mode:"default",lines:[]}}' "$STATE_FILE"
       ;;
     *) return 1;;
   esac
@@ -3064,6 +3075,16 @@ protocol_menu(){
     ask '请选择协议 [0-4]：' choice
     case "$choice" in 1) tag=vless;;2) tag=vmess;;3) tag=hy2;;4) tag=anytls;;0|'') return 0;;*) red '无效输入。'; continue;; esac
     while :; do
+      if ! tag_configured "$tag"; then
+        menu_header "$(protocol_label "$tag")" "主菜单 / 配置 / 协议管理 / $(protocol_label "$tag")"
+        printf '  状态：未添加\n\n'
+        dim '已删除的协议不保留可见配置；添加后会进入端口和协议专项向导。'
+        menu_item 1 '添加协议'
+        menu_back '返回协议列表'
+        ask '请选择 [0-1]：' choice
+        case "$choice" in 1) toggle_protocol "$tag";;0|'') break;;*) red '无效输入。';; esac
+        continue
+      fi
       tag_enabled "$tag" && action='停用协议' || action='启用协议'
       port=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
       valid_port "$port" || port='未分配'
