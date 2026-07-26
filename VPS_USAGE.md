@@ -1,108 +1,51 @@
 # VPS Net Manager 使用说明
 
-## 1. 适用系统与准备
+## 支持范围
 
-Sing-box 模块支持 Debian、Ubuntu、RHEL 系与 Alpine；Realm 模块仅支持 Debian 或 Ubuntu，并要求 systemd。请以 `root` 运行。云厂商安全组仍需放行实际使用的端口。
+仅支持 Debian/Ubuntu、systemd、amd64/arm64。管理器不迁移旧 Bash 状态；若安装器发现旧 `protocols.json` 或 Shell 版 `vpnm`，会拒绝覆盖。
 
-服务监听 `::`；“对外地址”仅决定分享链接中的服务器地址，可填写 IPv4、IPv6 或解析到本机的域名，不要带协议头、方括号或端口。
-
-## 2. 安装与更新渠道
-
-当前版本：
+## 安装与菜单
 
 ```bash
-VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/sb.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/install.sh)
+vpnm
 ```
 
-安装后运行 `vpnm`。成功安装或更新的渠道保存在状态目录，后续更新会继续使用同一渠道。主菜单 `5` 可切换当前分支、输入标签或输入其他分支。更新时脚本会先解析渠道对应的不可变 Git commit，再从该 commit 下载脚本与 SHA-256，避免 GitHub 分支缓存造成脚本与校验文件短暂不一致。若要固定到发布版，请将安装命令里的 `main` 与 `VPNM_CHANNEL` 同时替换为该标签。
+首次安装会建立零协议状态，然后进入中文向导。协议配置不存在表示未添加；存在但关闭表示已停用；存在且开启表示已启用。
 
-## 3. 协议与节点
+## 协议与客户端输出
 
-安装时可用逗号多选协议：`1,3,4` 代表 Vless-Reality、Hysteria2、AnyTLS；至少选择一个。Sing-box 1.10.7 不支持 AnyTLS。Vless-Reality 可选择 Sing-box 或 Xray-core 服务端，其他协议均由 Sing-box 处理。
+- Vless-Reality 可选择 Sing-box 或 Xray；Xray 选项包括指纹、SpiderX、时间差、ML-DSA-65 与回落限制。
+- Hysteria2 支持 UDP 跳跃。跳跃范围会被项目管理的 IPv4/IPv6 NAT 规则转发到主端口。
+- AnyTLS 支持默认或自定义 Padding。
+- 菜单的“显示分享链接和二维码”只展示已启用协议；同时生成 Sing-box 客户端 JSON 与 Mihomo YAML 到 `generated/`。
 
-选择协议后会进入“初始配置”：
+## 证书
 
-- **推荐默认**：每个协议自动挑选当时未被占用的随机端口；Reality 使用 `www.apple.com`，普通 TLS 协议使用 `www.bing.com`，分享链接地址自动探测。
-- **自定义**：可逐个指定协议端口；每个端口也可直接回车保留随机。还可一次设定 Reality SNI、普通 TLS 域名（仅应用于本次实际选择的 Vmess-WS、Hysteria2、AnyTLS）以及分享链接对外地址。未选择或未启用的普通 TLS 协议保留 `www.bing.com` 默认自签证书，之后启用时再从证书库绑定所需证书。脚本会检查端口占用和本次安装中的重复端口。
+固定证书使用 Go 标准库生成并记录 DER/SPKI SHA-256。受管证书可以设置 `source_cert` 和 `source_key`：`vpnm cert sync --quiet` 会先读取、验证公私钥、SAN 与有效期，再将证书、状态和服务配置作为同一事务替换。systemd 每 6 小时执行一次该命令。
 
-自定义普通 TLS 域名后会立刻进入证书步骤，而不是等到安装摘要之后：首次安装会明确显示证书库为空并检查已有 ACME 证书；如果没有匹配证书，必须当场选择 ACME 申请或导入已有证书，才能继续填写对外地址和进入安装摘要。证书会在确认安装后校验、写入证书库并自动绑定本次安装的普通 TLS 协议，避免再修改一次。
+`vpnm cert acme` 只下载锁定 commit 和 SHA-256 的 ACME 脚本；脚本返回成功并不代表成功，管理器会再次验证指定证书和私钥。
 
-主菜单 `2` 进入配置：
+## Realm
 
-- 查看当前节点、分享链接、二维码和订阅。
-- 启用或停用协议，始终至少保留一个协议。
-- 修改节点名称、端口、UUID/密码、对外地址和协议专属参数。
-- 修改后自动重新生成 `subscription.txt`、`subscription.base64`、`mihomo-subscription.txt` 与 `sing-box-client.json`；它们只包含已启用协议。
+先执行 `vpnm realm install`，再从菜单添加规则。Realm 状态位于 `/etc/vps-net-manager/realm.json`，每条规则同时转发 TCP 与 UDP。规则替换会预开放 UFW、原子替换状态/TOML、重启服务，失败则回滚。
 
-每项配置先写入临时文件，再执行 JSON、`sing-box check` 和 Xray 检查（如启用）。失败时会保留原配置、原端口和原服务。
+## BBR
 
-从“管理协议”启用一个此前未启用的协议时，会先进入统一启用向导：可重新随机分配未占用端口、手动输入自定义端口，或保留原预设端口。启用前会显示该协议的关键参数；Vmess-WS、Hysteria2 和 AnyTLS 还会校验证书文件、公私钥及其 SAN 是否覆盖当前域名，不通过不会启动服务。若需要调整 Reality SNI、WS Path、TLS 证书、Hy2 带宽或 AnyTLS Padding，可取消启用后在该协议的“专项参数”中完成调整。
+```bash
+vpnm bbr status
+vpnm bbr enable
+vpnm bbr restore
+```
 
-重新添加已删除的 Vless-Reality 时，端口选择后会进入 Reality SNI 选择：可使用推荐默认 `www.apple.com`，或手动填写目标域名。SNI 会在最终确认启用时与端口、Reality 握手目标和节点链接一次性写入；之后仍可在“专项参数 → Reality SNI 与目标扫描”中扫描候选并更换目标。
+只创建或删除 VPNM 自己的 `/etc/sysctl.d/99-vps-net-manager-bbr.conf` 与 `/etc/modules-load.d/vps-net-manager-bbr.conf`；不会安装内核或更改引导项。
 
-凭据管理默认选择安全随机轮换：Vless-Reality 与 Vmess-WS 生成新 UUID，Hysteria2 与 AnyTLS 生成新的随机密码；仍可选择手动输入以兼容已有客户端。轮换成功后旧节点立即失效，需要重新导入订阅。协议菜单中的“停用”只是不运行该协议并保留参数；“删除协议配置”会停用并重置其端口、凭据及专项参数，移除节点、订阅和脚本管理的 UFW 规则。删除后协议显示为“未添加”，不会再显示内部模板或敏感凭据；选择该协议仅可“添加协议”，再重新进入端口和专项配置向导。删除不会动证书库。允许零协议：删除或停用最后一个协议时，Sing-box/Xray 会停止；证书库、Realm、WARP 和 TCP/BBR 仍可独立使用。
+## 更新与卸载
 
-Hy2 的启用向导还可直接设置 UDP 端口跳跃（`mport`）：跳跃范围的 UDP 流量会由 NAT REDIRECT 转发到 Hy2 主监听端口，订阅会自动带上 `mport=开始:结束`，UFW 已启用时会同步放行整个 UDP 范围。设置或启用前会检查范围中是否已有其他 UDP 服务，并探测 `iptables`/`ip6tables` 的 `nat` 表和 `REDIRECT` 目标。若只有一个地址族可用，跳跃仅对该地址族生效；若两个后端均不可用，脚本拒绝保存，常见原因是未以 root 运行、内核/容器未提供 NAT、或 iptables-nft 的 nat 表不可用。可在 `vpnm → 2 → 管理协议 → Hysteria2 → 专项参数 → 配置 UDP 端口跳跃` 重新设置。
+`vpnm update` 仅在用户主动执行时联网，解析 `main-build` 的不可变 commit 并校验 manifest、checksums、新二进制和核心文件。失败会恢复原二进制、核心与服务。
 
-未安装网络服务时，配置、应用配置、内核切换、服务日志、证书库和 WARP-plus 没有可操作的服务状态，因此菜单会标注“需先安装”。更新管理、WARP、TCP/BBR 管理和 Realm 端口转发不依赖 Sing-box 安装，可以单独使用。
+```bash
+vpnm uninstall --yes
+```
 
-## 4. Reality
-
-Reality SNI 候选来自 `assets/reality-targets.txt`，安装时复制到状态目录。扫描展示全部候选并分为三类：
-
-- **推荐**：受信证书/SNI、TLS 1.3、h2、X25519 系列密钥交换以及至少 2/3 次握手均通过。
-- **可用**：基础 TLS 与证书校验通过，但缺少推荐条件；选择前会二次确认。
-- **不可**：不能选择，并显示失败原因。
-
-扫描候选清单后会显示全部结果，并在表格下方要求输入目标序号才会应用。扫描指定目标后同样会展示该目标的 TLS、ALPN、密钥交换、证书、平均延迟、抖动和成功次数，只有确认后才会应用。为避免大量 TLS 握手互相争抢 VPS 出口，候选扫描默认最多同时测量 6 个目标；扫描会更久，但结果更接近单目标测量。Reality SNI 菜单还提供“直接设置（不扫描）”，可立即填写并应用域名；它跳过证书/SNI、TLS 1.3、h2、X25519 和稳定性检查，应仅在你已确认目标可用时使用，建议之后补做一次扫描验证。扫描延迟是从当前 VPS 发起的 DNS、TCP 与 TLS 握手耗时，不是本地客户端到 VPS 的延迟。可在 Reality SNI 菜单查看、维护或重新下载候选清单。
-
-Xray Reality 额外提供客户端指纹、SpiderX、最大时间差、ML-DSA-65 与非认证流量限制。ML-DSA-65 的长密钥由 Xray 自动生成，不需要手动输入。
-
-## 5. 证书与普通 TLS 协议
-
-Vmess-WS、Hysteria2 与 AnyTLS 使用普通 TLS。Vless-Reality 不使用普通 TLS 证书库，而是使用自己的 Reality 私钥、公钥、Short ID 和目标 SNI。证书库与协议绑定是两个独立步骤：通过主菜单 `7 证书库 / ACME` 申请、导入、查看和维护证书；证书不会因申请或导入而自动绑定任何协议。证书库视图中的未启用协议会明确标注 Reality 为“证书不适用”，避免与普通 TLS 协议混淆。
-
-- 导入自签证书固定 SHA256，或导入公开受信证书并使用系统 CA 验证。
-- 域名证书向导会检查已有证书，或通过 ACME/手动路径取得证书；验证有效期、公私钥匹配和 SAN 域名覆盖后，只加入证书库。
-- 证书库列表会同时显示每张证书的来源、有效期和当前协议绑定情况。
-- 导入时可选择跟踪 cert/key 源文件。systemd 主机每 6 小时检查一次；也可手动同步或关闭自动同步。
-
-仅修改证书库不会重启 Sing-box 或 Xray，也不会改变监听端口、协议域名或订阅；只有在协议中完成证书绑定后，才会生成并验证新配置并重启受影响服务。
-
-要让协议使用某张证书，进入 `vpnm → 2 → 管理协议 → 对应协议 → 专项参数 → 从证书库选择证书`。若该证书不覆盖协议当前域名，脚本会要求输入证书 SAN 覆盖的新域名，再把“协议域名 + 证书 ID”作为同一份候选配置原子应用。
-
-协议中的“修改证书域名”不会接受任意域名：输入后会筛选证书库中 SAN 覆盖该域名且公私钥有效的证书，必须从结果中选择一张才能应用。没有匹配项时不会改动协议，并提示先通过主菜单 `7` 申请或导入证书。
-
-每个协议的操作菜单还提供“查看当前协议配置”，可单独查看该协议的端口、凭据、传输参数，以及普通 TLS 协议当前绑定的证书。已启用协议的页面底部会直接显示可复制的当前分享链接；未启用或未添加协议会以提示说明为什么没有可用链接。
-
-协议列表与协议详情中的状态带有颜色：绿色为已启用，黄色为已停用（配置保留）或当前零协议状态，红色为未添加（已删除）。
-
-当所有协议都已停用或删除时，“查看已启用节点和完整链接”会显示黄色的空状态说明并直接返回配置菜单；这是正常状态，不会退出管理脚本。
-
-证书同步不会申请证书或联网执行 ACME。它只读取已配置的本地源文件，验证新证书、渲染并检查配置后再原子替换；失败会恢复旧证书、订阅和服务。
-
-AnyTLS 应使用自己的域名和匹配证书。Cloudflare DNS 记录应为“仅 DNS（灰云）”，因为普通小黄云不能代理 AnyTLS 原始 TCP。AnyTLS 默认使用固定的官方 Padding 方案；只有明确知道客户端兼容性时才在协议菜单中改成自定义方案。
-
-## 6. Realm 端口转发
-
-主菜单 `12` 提供 Realm，仅 Debian/Ubuntu + systemd 可用。
-
-1. 选择 `1` 安装或更新 Realm。官方 `v2.9.4` 二进制和 SHA-256 已锁定。
-2. 选择 `2` 添加规则，依次输入监听地址（直接回车默认 `0.0.0.0`）、监听端口、目标地址和目标端口。
-3. 例如：`0.0.0.0:40000 → 203.0.113.10:443`。
-
-每条规则固定同时转发 TCP 与 UDP。UFW 启用时，项目会管理对应的 TCP/UDP 放行规则。规则状态在 `/etc/vps-net-manager/realm/rules.json`，生成的配置在 `/etc/vps-net-manager/realm/config.toml`，systemd 单元是 `vps-net-manager-realm.service`。
-
-添加规则会自动启动 Realm。之后可在 Realm 菜单选择“启动”（同时设为开机启动）、“停止”（保留规则但取消开机启动）、“重启”、查看日志或完整卸载；启动或重启失败会保留原规则并提示查看日志。
-
-## 7. 防火墙、内核与运维
-
-UFW 已启用时，协议端口和 Realm 端口会先放行新规则，服务成功后才移除项目拥有的旧规则。UFW 未安装或未启用时脚本不改动防火墙；云安全组仍由你管理。
-
-主菜单 `3` 重新应用当前配置并重启；`4` 更新 Sing-box 内核；`6` 查看服务日志；`9` 管理原生 BBR；`11` 卸载。BBR 只影响 TCP，Hysteria2 的 QUIC/UDP 不受它控制。
-
-卸载会停止项目创建的 Sing-box、Xray、Argo、Realm 和证书同步服务，删除整个 `/etc/vps-net-manager` 状态目录（其中包括协议配置、证书库副本、下载内核、订阅和节点信息）、项目创建的 UFW 规则、Hy2 跳跃链及 `vpnm` 命令。因此重装不会读取历史协议配置，也不会与新版状态冲突。不会删除系统其他服务、管理员自行创建的防火墙规则，或证书库外原始路径中的证书文件。
-
-## 8. 依赖校验失败
-
-不要跳过校验。检查 VPS 的系统时间、DNS 和到 GitHub 发布源的网络，然后重试。每次依赖更新必须同时更新脚本常量、[DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md) 和版本说明。
+卸载仅删除 VPNM 创建的 systemd unit、状态目录、标记 UFW 规则和 `/usr/local/bin/vpnm`，不会删除不属于 VPNM 的服务或防火墙规则。

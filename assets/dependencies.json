@@ -1,0 +1,58 @@
+{
+  "sing_box": {
+    "version": "1.13.14",
+    "assets": {
+      "amd64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz",
+        "sha256": "f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697",
+        "archive": "tar.gz",
+        "member": "sing-box-1.13.14-linux-amd64/sing-box"
+      },
+      "arm64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-arm64.tar.gz",
+        "sha256": "4742df6a4314e8ecc41736849fca6d73b8f9e91b6e8b06ee794ff17ba180579e",
+        "archive": "tar.gz",
+        "member": "sing-box-1.13.14-linux-arm64/sing-box"
+      }
+    }
+  },
+  "xray": {
+    "version": "26.3.27",
+    "assets": {
+      "amd64": {
+        "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip",
+        "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+        "archive": "zip",
+        "member": "xray"
+      },
+      "arm64": {
+        "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-arm64-v8a.zip",
+        "sha256": "4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c",
+        "archive": "zip",
+        "member": "xray"
+      }
+    }
+  },
+  "realm": {
+    "version": "2.9.4",
+    "assets": {
+      "amd64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.4/realm-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd",
+        "archive": "tar.gz",
+        "member": "realm"
+      },
+      "arm64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.4/realm-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99",
+        "archive": "tar.gz",
+        "member": "realm"
+      }
+    }
+  },
+  "acme": {
+    "commit": "8ffa90d950ec9562248b8712634b335e8684e01b",
+    "url": "https://raw.githubusercontent.com/yonggekkk/acme-yg/8ffa90d950ec9562248b8712634b335e8684e01b/acme.sh",
+    "sha256": "5e43b5eea48987574730cecf77b5de483d4d7ec6e1e5f242b80f1321863f0521"
+  }
+}

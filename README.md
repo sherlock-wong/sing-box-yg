@@ -1,35 +1,41 @@
 # VPS Net Manager
 
-VPS Net Manager 是一个面向个人 VPS 的网络服务管理器。它集中管理 Sing-box、Xray-core Reality、Realm 端口转发、证书、UFW、防火墙跳跃、Argo、WARP 与 BBR。
+VPS Net Manager 是面向个人 VPS 的 Go 网络服务管理器。生产入口只有 `/usr/local/bin/vpnm`；仓库 `main` 只保存源码，CI 成功后把可安装的 Linux 二进制发布到滚动的 `main-build` 分支。
 
-项目不包含面板、多用户计费、流量配额、Serv00/Hostuno、保活网页或第三方订阅转换服务。
-
-## 支持范围
-
-| 模块 | 功能 |
-| --- | --- |
-| Sing-box | Vless-Reality、Vmess-WS、Hysteria2、AnyTLS |
-| Xray-core | 可选的 Vless-Reality 服务端，支持 SpiderX、指纹、ML-DSA-65 与回落限制 |
-| Realm | Debian/Ubuntu 上的 TCP+UDP 端口转发规则 |
-| 证书 | 独立证书库、按协议选择绑定、受管源文件同步与回滚 |
-| 客户端配置 | 分享链接、二维码、Mihomo、Sing-box 与聚合订阅 |
+支持 Debian/Ubuntu、systemd、amd64/arm64，以及 Vless-Reality（Sing-box/Xray）、Hysteria2、AnyTLS、Realm、证书同步、Reality 扫描和原生 BBR。旧 Bash 版本不能迁移：请先用旧菜单卸载。
 
 ## 安装
 
-当前版本：
-
 ```bash
-VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/sb.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/install.sh)
 ```
 
-安装完成后运行 `vpnm`。如需使用某个已发布版本，将命令中的 `main` 替换为对应标签，并同时设置 `VPNM_CHANNEL=<标签>`。
+安装器会解析 `main-build` 的不可变 commit，下载对应架构的 `vpnm` 并校验 SHA-256。VPS 无需 Go、GCC、jq、qrencode、tar 或 unzip。
 
-## 安全原则
+安装完成后运行：
 
-- 外部脚本和二进制锁定版本或 commit，下载后必须通过 SHA-256 校验。
-- 协议和证书修改会先生成临时配置，通过 JSON、Sing-box 与 Xray（如启用）检查后再替换。
-- 首次安装可选推荐默认或自定义初始配置；自定义端口会在安装前检查占用和重复，填写自定义普通 TLS 域名后会立即完成证书库检查与 ACME/导入方案选择。
-- UFW 启用时，先放行新端口；服务重启成功后再删除项目创建的旧规则。
-- 所有订阅只生成已启用协议；自签证书使用固定值，受信证书使用正常 CA 校验。
+```bash
+vpnm
+```
 
-完整的安装、协议、证书、Realm、更新、卸载与故障排查见 [VPS_USAGE.md](VPS_USAGE.md)。下载锁定清单见 [DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md)。
+## 非交互命令
+
+```text
+vpnm install
+vpnm apply
+vpnm update
+vpnm uninstall --yes
+vpnm cert sync --quiet
+vpnm cert acme --domain <域名> --cert <证书路径> --key <私钥路径> -- <ACME 脚本参数>
+vpnm reality scan
+vpnm realm install
+vpnm realm validate
+vpnm realm apply
+vpnm bbr status|enable|restore
+vpnm state validate
+vpnm version
+```
+
+`update` 会先验证新管理器、配置和已锁定核心；服务健康检查失败会恢复旧二进制与核心。`uninstall` 必须显式给出 `--yes`。
+
+依赖锁定说明见 [DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md)。

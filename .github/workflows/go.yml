@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -29,8 +29,53 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-      - run: GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o vpnm-linux-${{ matrix.goarch }} ./cmd/vpnm
+      - name: Build pinned Linux binary
+        run: |
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath \
+            -ldflags="-s -w -X main.sourceCommit=${GITHUB_SHA} -X main.builtAt=${built_at}" \
+            -o vpnm-linux-${{ matrix.goarch }} ./cmd/vpnm
+          # The hosted runner can execute the amd64 artifact directly. The
+          # arm64 artifact is still cross-compiled here and covered by tests.
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            ./vpnm-linux-${{ matrix.goarch }} version
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: vpnm-linux-${{ matrix.goarch }}
           path: vpnm-linux-${{ matrix.goarch }}
+  publish-main-build:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Create immutable build manifest
+        run: |
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go run ./cmd/manifest \
+            --commit "$GITHUB_SHA" \
+            --built-at "$built_at" \
+            --amd64 dist/vpnm-linux-amd64/vpnm-linux-amd64 \
+            --arm64 dist/vpnm-linux-arm64/vpnm-linux-arm64 \
+            --output manifest.json \
+            --checksums checksums.txt
+      - name: Roll main-build to this successful build
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan main-build
+          git rm -rf . || true
+          cp dist/vpnm-linux-amd64/vpnm-linux-amd64 .
+          cp dist/vpnm-linux-arm64/vpnm-linux-arm64 .
+          git add vpnm-linux-amd64 vpnm-linux-arm64 manifest.json checksums.txt
+          git commit -m "build: ${GITHUB_SHA}"
+          git push --force origin main-build
