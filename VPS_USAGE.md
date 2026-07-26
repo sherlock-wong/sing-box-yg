@@ -38,6 +38,8 @@ VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 从“管理协议”启用一个此前未启用的协议时，会先进入统一启用向导：可重新随机分配未占用端口、手动输入自定义端口，或保留原预设端口。启用前会显示该协议的关键参数；Vmess-WS、Hysteria2 和 AnyTLS 还会校验证书文件、公私钥及其 SAN 是否覆盖当前域名，不通过不会启动服务。若需要调整 Reality SNI、WS Path、TLS 证书、Hy2 带宽或 AnyTLS Padding，可取消启用后在该协议的“专项参数”中完成调整。
 
+Hy2 的启用向导还可直接设置 UDP 端口跳跃（`mport`）：跳跃范围的 UDP 流量会由 NAT REDIRECT 转发到 Hy2 主监听端口，订阅会自动带上 `mport=开始:结束`，UFW 已启用时会同步放行整个 UDP 范围。设置或启用前会检查范围中是否已有其他 UDP 服务，并探测 `iptables`/`ip6tables` 的 `nat` 表和 `REDIRECT` 目标。若只有一个地址族可用，跳跃仅对该地址族生效；若两个后端均不可用，脚本拒绝保存，常见原因是未以 root 运行、内核/容器未提供 NAT、或 iptables-nft 的 nat 表不可用。可在 `vpnm → 2 → 管理协议 → Hysteria2 → 专项参数 → 配置 UDP 端口跳跃` 重新设置。
+
 未安装网络服务时，配置、应用配置、内核切换、服务日志、证书库和 WARP-plus 没有可操作的服务状态，因此菜单会标注“需先安装”。更新管理、WARP、TCP/BBR 管理和 Realm 端口转发不依赖 Sing-box 安装，可以单独使用。
 
 ## 4. Reality

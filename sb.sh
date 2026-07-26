@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.9'
+SCRIPT_VERSION='v26.7.25-vpnm.10'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -228,6 +228,26 @@ anytls_padding_state_valid(){
   anytls_padding_valid "$mode" "${lines[@]}"
 }
 port_available(){ ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]$1$"; }
+hy2_hop_range_valid(){
+  local hop=$1 start end
+  [[ "$hop" =~ ^([1-9][0-9]{0,4}):([1-9][0-9]{0,4})$ ]] || return 1
+  start=${BASH_REMATCH[1]}; end=${BASH_REMATCH[2]}
+  valid_port "$start" && valid_port "$end" && (( start <= end ))
+}
+hy2_hop_conflicts_with_udp_listener(){ # range [ignored local Hy2 port]
+  local hop=$1 ignored=${2:-0} start end
+  hy2_hop_range_valid "$hop" || return 1
+  start=${hop%%:*}; end=${hop##*:}
+  ss -H -lun 2>/dev/null | awk -v low="$start" -v high="$end" -v ignored="$ignored" '
+    {
+      endpoint=$5
+      sub(/^.*:/,"",endpoint)
+      if (endpoint ~ /^[0-9]+$/ && endpoint+0>=low && endpoint+0<=high && endpoint+0!=ignored) {
+        print endpoint; exit
+      }
+    }
+  '
+}
 protocol_label(){ case "$1" in vless) echo Vless-Reality;; vmess) echo Vmess-WS;; hy2) echo Hysteria2;; anytls) echo AnyTLS;; esac; }
 protocol_transport(){ case "$1" in vless|vmess|anytls) echo TCP;; hy2) echo UDP;; esac; }
 protocol_detail(){
@@ -1283,6 +1303,10 @@ commit_state(){ # candidate JSON stdin
   [[ -f "$STATE_FILE" ]] && cp "$STATE_FILE" "$old_state"
   [[ -f "$CONFIG_FILE" ]] && cp "$CONFIG_FILE" "$old_config"
   [[ -f "$XRAY_CONFIG_FILE" ]] && cp "$XRAY_CONFIG_FILE" "$old_xray"
+  hy2_hop_candidate_preflight "$candidate" "$old_state" || {
+    red 'Hy2 UDP 跳跃预检失败，原配置未改变。'
+    return 1
+  }
   ufw_prepare_candidate "$candidate" "$ufw_transaction" || return 1
   chmod 600 "$state_tmp" "$config_tmp" "$xray_tmp"
   mv "$state_tmp" "$STATE_FILE"; mv "$config_tmp" "$CONFIG_FILE"; mv "$xray_tmp" "$XRAY_CONFIG_FILE"
@@ -1309,7 +1333,7 @@ commit_state(){ # candidate JSON stdin
     return 1
   fi
   ufw_finalize_candidate "$old_state" "$candidate"
-  reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
+  reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用；主服务仍在运行，但 mport 跳跃不可用。请在 Hy2 专项参数中查看处理建议。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
   reconcile_certificate_sync_schedule "$candidate" || yellow '证书自动同步计划未能更新；可在证书库中手动同步。'
   green '配置已通过 JSON、Sing-box 与 Xray（如启用）检查；双内核配置已原子替换并应用。'
@@ -1592,17 +1616,71 @@ install_cloudflared(){
   install -m 755 "$WORKDIR/cloudflared" "$STATE_DIR/cloudflared"
 }
 
+hy2_hop_nat_backend_available(){ # iptables or ip6tables; test NAT + REDIRECT without changing live rules
+  local fw=$1 probe="${HY2_CHAIN}_PROBE_$$"
+  command -v "$fw" >/dev/null 2>&1 || return 1
+  "$fw" -w 2 -t nat -S >/dev/null 2>&1 || return 1
+  "$fw" -w 2 -t nat -N "$probe" >/dev/null 2>&1 || return 1
+  "$fw" -w 2 -t nat -A "$probe" -p udp --dport 1 -j REDIRECT --to-ports 1 >/dev/null 2>&1 || {
+    "$fw" -w 2 -t nat -F "$probe" >/dev/null 2>&1 || true
+    "$fw" -w 2 -t nat -X "$probe" >/dev/null 2>&1 || true
+    return 1
+  }
+  "$fw" -w 2 -t nat -F "$probe" >/dev/null 2>&1 || true
+  "$fw" -w 2 -t nat -X "$probe" >/dev/null 2>&1 || true
+}
+hy2_hop_nat_preflight(){ # requires at least one usable IP family
+  local ok=0 fw
+  for fw in iptables ip6tables; do
+    hy2_hop_nat_backend_available "$fw" && { ok=$((ok + 1)); continue; }
+  done
+  (( ok > 0 )) || {
+    red 'Hy2 UDP 跳跃需要可用的 iptables NAT/REDIRECT；当前 IPv4 和 IPv6 后端均不可用。'
+    dim '请确认以 root 运行、内核支持 NAT/REDIRECT，且 iptables(-nft) 的 nat 表可用；未修复前请不要启用端口跳跃。'
+    return 1
+  }
+  (( ok == 2 )) || yellow 'Hy2 UDP 跳跃只检测到一个可用的 NAT 后端；另一地址族的跳跃端口不会生效。'
+}
+hy2_hop_apply_backend(){ # firewall enabled hop port
+  local fw=$1 enabled=$2 hop=$3 port=$4
+  "$fw" -w 2 -t nat -N "$HY2_CHAIN" >/dev/null 2>&1 ||
+    "$fw" -w 2 -t nat -S "$HY2_CHAIN" >/dev/null 2>&1 || return 1
+  "$fw" -w 2 -t nat -F "$HY2_CHAIN" >/dev/null 2>&1 || return 1
+  "$fw" -w 2 -t nat -C PREROUTING -j "$HY2_CHAIN" >/dev/null 2>&1 ||
+    "$fw" -w 2 -t nat -A PREROUTING -j "$HY2_CHAIN" >/dev/null 2>&1 || return 1
+  [[ "$enabled" == true && -n "$hop" ]] || return 0
+  "$fw" -w 2 -t nat -A "$HY2_CHAIN" -p udp --dport "$hop" -j REDIRECT --to-ports "$port" >/dev/null 2>&1
+}
 reconcile_hy2_hop(){
-  command -v iptables >/dev/null 2>&1 || return 0
-  local enabled hop port fw
+  local enabled hop port fw ok=0 failed=0
   enabled=$(jq -r '.protocols.hy2.enabled' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); port=$(jq -r '.protocols.hy2.port' "$STATE_FILE")
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
-    "$fw" -t nat -N "$HY2_CHAIN" 2>/dev/null || true
-    "$fw" -t nat -F "$HY2_CHAIN"
-    "$fw" -t nat -C PREROUTING -j "$HY2_CHAIN" 2>/dev/null || "$fw" -t nat -A PREROUTING -j "$HY2_CHAIN"
-    [[ "$enabled" == true && -n "$hop" ]] && "$fw" -t nat -A "$HY2_CHAIN" -p udp --dport "$hop" -j REDIRECT --to-ports "$port"
+    if hy2_hop_apply_backend "$fw" "$enabled" "$hop" "$port"; then ok=$((ok + 1)); else
+      failed=$((failed + 1))
+      yellow "Hy2 UDP 跳跃未能写入 ${fw} NAT 规则。"
+    fi
   done
+  [[ "$enabled" != true || -z "$hop" ]] && return 0
+  (( ok > 0 )) || return 1
+  (( failed == 0 )) || yellow 'Hy2 UDP 跳跃仅在部分 IP 地址族生效；订阅中的 mport 仅应通过可用地址族连接。'
+}
+hy2_hop_candidate_preflight(){ # candidate old-state-file; only probe when a changed active hop requires NAT
+  local candidate=$1 old_file=$2 hop enabled port old_hop old_enabled old_port conflict
+  enabled=$(jq -r '.protocols.hy2.enabled' <<<"$candidate")
+  hop=$(jq -r '.protocols.hy2.udp_hop' <<<"$candidate")
+  [[ "$enabled" == true && -n "$hop" ]] || return 0
+  hy2_hop_range_valid "$hop" || { red 'Hy2 UDP 跳跃端口范围无效。'; return 1; }
+  port=$(jq -r '.protocols.hy2.port' <<<"$candidate")
+  conflict=$(hy2_hop_conflicts_with_udp_listener "$hop" "$port" || true)
+  [[ -z "$conflict" ]] || { red "Hy2 UDP 跳跃范围包含正在被其他服务监听的 UDP 端口：${conflict}。"; return 1; }
+  if [[ -s "$old_file" ]]; then
+    old_enabled=$(jq -r '.protocols.hy2.enabled' "$old_file")
+    old_hop=$(jq -r '.protocols.hy2.udp_hop' "$old_file")
+    old_port=$(jq -r '.protocols.hy2.port' "$old_file")
+    [[ "$enabled:$hop:$port" == "$old_enabled:$old_hop:$old_port" ]] && return 0
+  fi
+  hy2_hop_nat_preflight
 }
 
 reconcile_argo(){
@@ -2556,9 +2634,10 @@ certificate_menu(){
   done
 }
 set_hy2_hop(){
-  local choice x start end candidate
+  local choice x start end candidate conflict current_port
   menu_header 'UDP 端口跳跃' '主菜单 / 配置 / 协议 / Hysteria2 / UDP 端口跳跃'
   printf '  当前范围：%s\n\n' "$(jq -r '.protocols.hy2.udp_hop | if length>0 then . else "未启用" end' "$STATE_FILE")"
+  dim '跳跃端口会通过 NAT REDIRECT 转到 Hy2 主端口；UFW 启用时，脚本会同步放行整个 UDP 范围。'
   menu_item 1 '设置端口范围'
   menu_item 2 '关闭端口跳跃'
   menu_back '返回专项参数'
@@ -2568,9 +2647,12 @@ set_hy2_hop(){
     1)
       ask '范围，例如 20000:30000（回车/0 返回上一级）：' x
       cancel_input "$x" && return 0
-      [[ "$x" =~ ^([1-9][0-9]{0,4}):([1-9][0-9]{0,4})$ ]] || { red '范围格式无效。'; return 0; }
-      start=${BASH_REMATCH[1]}; end=${BASH_REMATCH[2]}
-      valid_port "$start" && valid_port "$end" && (( start <= end )) || { red '端口范围无效。'; return 0; }
+      hy2_hop_range_valid "$x" || { red '端口范围无效。'; return 0; }
+      start=${x%%:*}; end=${x##*:}
+      current_port=$(jq -r '.protocols.hy2.port' "$STATE_FILE")
+      conflict=$(hy2_hop_conflicts_with_udp_listener "$x" "$current_port" || true)
+      [[ -z "$conflict" ]] || { red "范围包含正在被其他服务监听的 UDP 端口：${conflict}。"; return 0; }
+      hy2_hop_nat_preflight || return 0
       ;;
     2) x=;;
     *) red '无效输入。'; return 0;;
@@ -2704,6 +2786,54 @@ choose_protocol_activation_port(){ # tag -> sets ACTIVATION_PORT; 2 means user c
     esac
   done
 }
+read_hy2_hop_range(){ # sets ACTIVATION_HY2_HOP
+  local hop conflict
+  while :; do
+    ask '跳跃范围，例如 20000:30000（回车/0 返回上一级）：' hop
+    cancel_input "$hop" && return 2
+    hy2_hop_range_valid "$hop" || { red '端口范围无效。'; continue; }
+    conflict=$(hy2_hop_conflicts_with_udp_listener "$hop" || true)
+    [[ -z "$conflict" ]] || { red "范围包含正在被其他服务监听的 UDP 端口：${conflict}。"; continue; }
+    ACTIVATION_HY2_HOP=$hop
+    return 0
+  done
+}
+choose_hy2_activation_hop(){ # sets ACTIVATION_HY2_HOP
+  local current choice
+  current=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE")
+  ACTIVATION_HY2_HOP=$current
+  while :; do
+    menu_header '启用向导：UDP 端口跳跃' '主菜单 / 配置 / 协议 / Hysteria2 / 启用'
+    dim '端口跳跃会把一段 UDP 端口重定向到 Hy2 主端口；需要至少一个可用的 iptables NAT/REDIRECT 后端。'
+    if [[ -n "$current" ]]; then
+      printf '  当前范围：%s\n\n' "$current"
+      menu_item 1 '保留当前跳跃范围'
+      menu_item 2 '修改跳跃范围'
+      menu_item 3 '本次关闭端口跳跃'
+      menu_back '取消启用并返回协议设置'
+      ask '请选择 [0-3]：' choice
+      case "$choice" in
+        1) ACTIVATION_HY2_HOP=$current; return 0;;
+        2) read_hy2_hop_range && return 0;;
+        3) ACTIVATION_HY2_HOP=; return 0;;
+        0|'') return 2;;
+        *) red '无效输入。';;
+      esac
+    else
+      dim '当前未启用端口跳跃。主端口仍可正常使用。'
+      menu_item 1 '暂不启用端口跳跃（推荐）'
+      menu_item 2 '现在设置跳跃范围'
+      menu_back '取消启用并返回协议设置'
+      ask '请选择 [0-2]：' choice
+      case "$choice" in
+        1) ACTIVATION_HY2_HOP=; return 0;;
+        2) read_hy2_hop_range && return 0;;
+        0|'') return 2;;
+        *) red '无效输入。';;
+      esac
+    fi
+  done
+}
 protocol_activation_prerequisites(){ # tag
   local tag=$1 cert_id cert key domain tls
   case "$tag" in
@@ -2731,8 +2861,8 @@ protocol_activation_prerequisites(){ # tag
     red "${tag} 当前证书不覆盖 ${domain}；请先在“专项参数”中修改域名或选择匹配证书。"; return 1;
   }
 }
-show_protocol_activation_summary(){ # tag port
-  local tag=$1 p=$2 cert_id cert_name tls engine
+show_protocol_activation_summary(){ # tag port [Hy2 hop]
+  local tag=$1 p=$2 hop=${3:-} cert_id cert_name tls engine
   echo
   yellow "${tag} 即将启用的配置："
   printf '  监听端口：%s/%s\n' "$p" "$(protocol_transport "$tag")"
@@ -2753,14 +2883,14 @@ show_protocol_activation_summary(){ # tag port
     hy2|anytls)
       cert_id=$(certificate_id_for_tag "$tag"); cert_name=$(jq -r --arg id "$cert_id" '.certificates[$id].name' "$STATE_FILE")
       printf '  TLS 域名：%s；证书：%s\n' "$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")" "$cert_name"
-      [[ "$tag" == hy2 ]] && printf '  带宽：上行 %s Mbps / 下行 %s Mbps\n' "$(jq -r '.protocols.hy2.up_mbps' "$STATE_FILE")" "$(jq -r '.protocols.hy2.down_mbps' "$STATE_FILE")"
+      [[ "$tag" == hy2 ]] && printf '  带宽：上行 %s Mbps / 下行 %s Mbps；UDP 跳跃：%s\n' "$(jq -r '.protocols.hy2.up_mbps' "$STATE_FILE")" "$(jq -r '.protocols.hy2.down_mbps' "$STATE_FILE")" "${hop:-未启用}"
       [[ "$tag" == anytls ]] && printf '  Padding：%s\n' "$(jq -r '.protocols.anytls.padding.mode' "$STATE_FILE")"
       ;;
   esac
   return 0
 }
 toggle_protocol(){
-  local tag=$1 state p label
+  local tag=$1 state p label hop conflict
   label=$(protocol_label "$tag")
   if tag_enabled "$tag"; then
     (( $(enabled_count) > 1 )) || { red '至少保留一个协议。'; return 0; }
@@ -2769,13 +2899,21 @@ toggle_protocol(){
     state=$(jq --arg t "$tag" '.protocols[$t].enabled=false' "$STATE_FILE")
   else
     [[ "$tag" != anytls || $(jq -r '.core' "$STATE_FILE") != 1.10* ]] || { red '1.10 内核不支持 AnyTLS。'; return 0; }
+    [[ "$tag" != hy2 ]] || choose_hy2_activation_hop || return 0
     choose_protocol_activation_port "$tag" || return 0
     p=$ACTIVATION_PORT
     protocol_activation_prerequisites "$tag" || return 0
-    show_protocol_activation_summary "$tag" "$p"
+    if [[ "$tag" == hy2 && -n "$ACTIVATION_HY2_HOP" ]]; then
+      hop=$ACTIVATION_HY2_HOP
+      conflict=$(hy2_hop_conflicts_with_udp_listener "$hop" "$p" || true)
+      [[ -z "$conflict" ]] || { red "跳跃范围包含正在被其他服务监听的 UDP 端口：${conflict}。"; return 0; }
+      hy2_hop_nat_preflight || return 0
+    fi
+    show_protocol_activation_summary "$tag" "$p" "${ACTIVATION_HY2_HOP:-}"
     confirm_change "确认启用 ${label}？" \
       "将使用 $(protocol_transport "$tag") 端口 ${p}，并同步配置、节点、订阅和 UFW（如已启用）。" || return 0
-    state=$(jq --arg t "$tag" --argjson p "$p" '.protocols[$t].port=$p | .protocols[$t].enabled=true' "$STATE_FILE")
+    state=$(jq --arg t "$tag" --argjson p "$p" --arg hop "${ACTIVATION_HY2_HOP:-}" \
+      '.protocols[$t].port=$p | .protocols[$t].enabled=true | if $t=="hy2" then .protocols.hy2.udp_hop=$hop else . end' "$STATE_FILE")
   fi
   apply_state "$state"
 }

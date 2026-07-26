@@ -1,6 +1,8 @@
-v26.7.25-vpnm.9
+v26.7.25-vpnm.10
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
+
+改进：Hy2 启用向导增加 UDP 端口跳跃选项，可保留、修改或关闭范围；跳跃范围会检查 UDP 监听冲突，并在写入配置前探测 iptables/ip6tables 的 NAT REDIRECT 能力。任一地址族不可用时会明确提示，两个后端均不可用时拒绝保存跳跃配置，原配置不变。
 
 改进：从协议列表启用任一未启用协议时，统一进入端口向导，可选随机、自定义或保留预设端口；启用前会按协议展示 Reality SNI、WS Path、TLS 证书、Hy2 带宽或 AnyTLS Padding，并校验普通 TLS 证书覆盖域名。
 

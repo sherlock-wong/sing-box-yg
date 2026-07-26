@@ -268,23 +268,28 @@ saved_activation_confirm=$(declare -f confirm_change)
 saved_activation_port_available=$(declare -f port_available)
 saved_activation_random_port=$(declare -f random_port)
 saved_activation_certificate_matches_domain=$(declare -f certificate_matches_domain)
+saved_activation_hop_preflight=$(declare -f hy2_hop_nat_preflight)
 activation_candidate=
 apply_state(){ activation_candidate=$1; }
 confirm_change(){ return 0; }
 port_available(){ return 0; }
 random_port(){ printf '29001\n'; }
 certificate_matches_domain(){ return 0; }
+hy2_hop_nat_preflight(){ return 0; }
 toggle_protocol vmess <<< $'2\n26001\n1'
 [[ $(jq -r '.protocols.vmess.enabled' <<<"$activation_candidate") == true ]] || exit 1
 [[ $(jq -r '.protocols.vmess.port' <<<"$activation_candidate") == 26001 ]] || exit 1
-toggle_protocol hy2 <<< $'1\n1'
+toggle_protocol hy2 <<< $'1\n1\n1'
 [[ $(jq -r '.protocols.hy2.enabled' <<<"$activation_candidate") == true ]] || exit 1
 [[ $(jq -r '.protocols.hy2.port' <<<"$activation_candidate") == 29001 ]] || exit 1
+toggle_protocol hy2 <<< $'2\n32000:32010\n1\n1'
+[[ $(jq -r '.protocols.hy2.udp_hop' <<<"$activation_candidate") == 32000:32010 ]] || exit 1
 eval "$saved_activation_apply"
 eval "$saved_activation_confirm"
 eval "$saved_activation_port_available"
 eval "$saved_activation_random_port"
 eval "$saved_activation_certificate_matches_domain"
+eval "$saved_activation_hop_preflight"
 
 # Protocol menus expose live enabled state, transport, port and TLS details.
 set_case_dir four
