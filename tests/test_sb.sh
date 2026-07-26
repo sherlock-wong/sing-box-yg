@@ -639,6 +639,18 @@ set_reality_sni <<< $'1\n1'
 eval "$saved_apply_state"
 eval "$saved_scan_reality_candidates"
 
+# A direct SNI path is available when the operator deliberately skips scanning.
+saved_apply_state=$(declare -f apply_state)
+saved_confirm_change=$(declare -f confirm_change)
+captured_state=
+apply_state(){ captured_state=$1; }
+confirm_change(){ return 0; }
+set_reality_sni <<< $'3\ndirect.example'
+[[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == direct.example ]]
+[[ $(jq -r '.protocols.vless.xray.target' <<<"$captured_state") == direct.example:443 ]]
+eval "$saved_apply_state"
+eval "$saved_confirm_change"
+
 # The domain-certificate wizard reuses a matching certificate or validates ACME output before adding it to the library.
 saved_find_domain_certificate=$(declare -f find_domain_certificate)
 saved_store_trusted_domain_certificate=$(declare -f store_trusted_domain_certificate)

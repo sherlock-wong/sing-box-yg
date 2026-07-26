@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.17'
+SCRIPT_VERSION='v26.7.25-vpnm.18'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -2114,6 +2114,10 @@ choose_scanned_reality_sni(){
   IFS=$'\t' read -r host grade reason successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
   [[ "$grade" != 0 ]] || { yellow "该目标不可选择：${reason}"; return 0; }
   [[ "$grade" == 2 ]] || confirm_change "确认使用基础可用目标 ${host}？" "$reason；推荐优先选择“推荐”级目标。" || return 0
+  apply_reality_sni "$host"
+}
+apply_reality_sni(){ # validated host
+  local host=$1 candidate
   jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
     yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
   candidate=$(jq --arg x "$host" '
@@ -2132,10 +2136,11 @@ set_reality_sni(){
   printf '  候选清单：%s\n\n' "$(reality_targets_status)"
   menu_item 1 '扫描候选清单并选择（展示全部结果）'
   menu_item 2 '扫描自定义目标'
-  menu_item 3 "查看候选清单位置：$(reality_targets_file)"
-  menu_item 4 '从当前渠道重新下载候选清单（覆盖本机清单）'
+  menu_item 3 '直接设置 Reality SNI（不扫描）'
+  menu_item 4 "查看候选清单位置：$(reality_targets_file)"
+  menu_item 5 '从当前渠道重新下载候选清单（覆盖本机清单）'
   menu_back '返回专项参数'
-  ask '请选择 [0-4]：' choice
+  ask '请选择 [0-5]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1) choose_scanned_reality_sni;;
@@ -2150,24 +2155,23 @@ set_reality_sni(){
       [[ "$grade" != 0 ]] || { red "该目标不可选：${reason}。原配置未改变。"; return 0; }
       [[ "$grade" == 2 ]] ||
         confirm_change "确认使用基础可用目标 ${host}？" "$reason；推荐优先选择“推荐”级目标。" || return 0
-      jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
-        yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
-      candidate=$(jq --arg x "$host" '
-        .protocols.vless.sni=$x |
-        .protocols.vless.xray.target=($x+":443") |
-        .protocols.vless.xray.server_names=[$x] |
-        .protocols.vless.xray.mldsa65_seed="" |
-        .protocols.vless.xray.mldsa65_verify=""
-      ' "$STATE_FILE")
-      apply_state "$candidate"
+      apply_reality_sni "$host"
       ;;
     3)
+      ask '直接设置的 Reality SNI（必须是域名；回车/0 返回上一级）：' host
+      cancel_input "$host" && return 0
+      valid_domain_name "$host" || { red 'Reality SNI 必须是有效域名。'; return 0; }
+      confirm_change "确认直接使用 ${host}？" \
+        '此操作不会检测证书/SNI、TLS 1.3、h2、X25519 或稳定性；建议随后运行候选或自定义目标扫描验证。' || return 0
+      apply_reality_sni "$host"
+      ;;
+    4)
       if sync_reality_targets; then
         printf '\n'; green '候选清单已就绪；可按“一行一个域名”的格式编辑该文件。'
         sed -n '1,120p' "$(reality_targets_file)"
       fi
       ;;
-    4)
+    5)
       confirm_change '重新下载并覆盖本机 Reality 候选清单？' \
         '会从当前更新渠道下载并校验清单；你在本机文件中手工加入的域名将被替换。' || return 0
       sync_reality_targets 1 && green '候选清单已更新；下次扫描将使用新清单。'
