@@ -402,7 +402,7 @@ timeout(){
   printf 'subject=CN = binary.example\0binary\nALPN protocol: h2\nVerify return code: 0 (ok)\n'
 }
 probe_metadata=$(probe_reality_metadata binary.example)
-[[ "$probe_metadata" == $'1.3\th2\tX25519\tbinary.example' ]]
+[[ "$probe_metadata" == $'1\t-\t1.3\th2\tX25519\tbinary.example' ]]
 unset -f timeout
 curl(){ printf '0.013000'; }
 [[ $(probe_reality_once fast.example 1) == 13 ]]
@@ -420,15 +420,16 @@ probe_reality_once(){
 }
 probe_reality_metadata(){
   case "$1" in
-    fast.example|slow.example|flaky.example) printf '1.3\th2\tX25519\t%s\n' "$1";;
-    *) return 1;;
+    fast.example|slow.example|flaky.example) printf '1\t-\t1.3\th2\tX25519\t%s\n' "$1";;
+    *) printf '0\tTLS 1.3 握手失败或证书不受信\t-\t-\t-\t-\n';;
   esac
 }
 ranked=$(scan_reality_candidates slow.example flaky.example bad.example fast.example)
 [[ $(awk -F '\t' 'NR==1{print $1}' <<<"$ranked") == fast.example ]]
 [[ $(awk -F '\t' 'NR==2{print $1}' <<<"$ranked") == slow.example ]]
 [[ $(awk -F '\t' 'NR==3{print $1}' <<<"$ranked") == flaky.example ]]
-[[ $(awk -F '\t' 'NR==1{print $5,$6,$7,$8}' <<<"$ranked") == '1.3 h2 X25519 fast.example' ]]
+[[ $(awk -F '\t' 'NR==4{print $1,$2,$3}' <<<"$ranked") == 'bad.example 0 TLS 1.3 握手失败或证书不受信' ]]
+[[ $(awk -F '\t' 'NR==1{print $7,$8,$9,$10}' <<<"$ranked") == '1.3 h2 X25519 fast.example' ]]
 eval "$saved_probe_reality_once"
 eval "$saved_probe_reality_metadata"
 
@@ -436,8 +437,8 @@ saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
 captured_state=
 apply_state(){ captured_state=$1; }
 scan_reality_candidates(){
-  printf 'www.cloudflare.com\t3\t42\t6\t1.3\th2\tX25519MLKEM768\twww.cloudflare.com\n'
-  printf 'www.microsoft.com\t3\t55\t9\t1.3\th2\tX25519\twww.microsoft.com\n'
+  printf 'www.cloudflare.com\t1\t通过严格兼容性与稳定性检测\t3\t42\t6\t1.3\th2\tX25519MLKEM768\twww.cloudflare.com\n'
+  printf 'www.microsoft.com\t1\t通过严格兼容性与稳定性检测\t3\t55\t9\t1.3\th2\tX25519\twww.microsoft.com\n'
 }
 set_reality_sni <<< $'1\n1'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == www.cloudflare.com ]]
@@ -457,11 +458,24 @@ apply_state(){ captured_state=$1; }
 scan_reality_candidates(){
   local n
   for n in {1..10}; do
-    printf 'target%s.example\t3\t%s\t1\t1.3\th2\tX25519\ttarget%s.example\n' "$n" "$((20 + n))" "$n"
+    printf 'target%s.example\t1\t通过严格兼容性与稳定性检测\t3\t%s\t1\t1.3\th2\tX25519\ttarget%s.example\n' "$n" "$((20 + n))" "$n"
   done
 }
 set_reality_sni <<< $'1\n10'
 [[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == target10.example ]]
+eval "$saved_apply_state"
+eval "$saved_scan_reality_candidates"
+
+# Incompatible targets remain visible but cannot be applied by their displayed number.
+saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
+saved_apply_state=$(declare -f apply_state)
+captured_state=
+apply_state(){ captured_state=$1; }
+scan_reality_candidates(){
+  printf 'legacy.example\t0\t未协商 HTTP/2（h2）\t0\t999999\t999999\t1.3\thttp/1.1\tX25519\tlegacy.example\n'
+}
+set_reality_sni <<< $'1\n1'
+[[ -z "$captured_state" ]]
 eval "$saved_apply_state"
 eval "$saved_scan_reality_candidates"
 

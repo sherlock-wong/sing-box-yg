@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.13'
+SCRIPT_VERSION='v26.7.25-fork.14'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -1386,30 +1386,40 @@ probe_reality_once(){ # host [sample-number] -> DNS + TCP + TLS handshake millis
     print milliseconds
   }'
 }
-probe_reality_metadata(){ # host -> TLS-version, ALPN, key-exchange, certificate-subject
+probe_reality_metadata(){ # host -> selectable, reason, TLS-version, ALPN, key-exchange, certificate-subject
   local host=$1 output tls alpn curve cert
   output=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-reality.XXXXXX")
   if ! timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 \
     -alpn 'h2,http/1.1' -verify_hostname "$host" -verify_return_error </dev/null >"$output" 2>&1; then
     rm -f "$output"
-    return 1
+    printf '0\tTLS 1.3 握手失败或证书不受信\t-\t-\t-\t-\n'
+    return 0
   fi
   tr -d '\000' < "$output" > "$output.text" && mv "$output.text" "$output"
-  grep -aq 'Verify return code: 0 (ok)' "$output" || { rm -f "$output"; return 1; }
+  if ! grep -aq 'Verify return code: 0 (ok)' "$output"; then
+    rm -f "$output"
+    printf '0\t证书验证失败或不匹配 SNI\t-\t-\t-\t-\n'
+    return 0
+  fi
   tls=$(sed -n 's/^New, TLSv\([^,]*\),.*/\1/p' "$output" | head -n1)
   alpn=$(sed -n 's/^ALPN protocol: //p' "$output" | head -n1)
   curve=$(sed -n 's/^Server Temp Key: \([^,]*\).*/\1/p' "$output" | head -n1)
   cert=$(sed -n 's/^subject=.*CN *= *\([^,]*\).*/\1/p' "$output" | head -n1)
-  [[ "$tls" == 1.3 && "$alpn" == h2 && "$curve" == X25519* ]] || {
-    rm -f "$output"
-    return 1
-  }
+  if [[ "$tls" != 1.3 ]]; then
+    rm -f "$output"; printf '0\t未协商 TLS 1.3\t%s\t%s\t%s\t%s\n' "${tls:--}" "${alpn:--}" "${curve:--}" "${cert:--}"; return 0
+  fi
+  if [[ "$alpn" != h2 ]]; then
+    rm -f "$output"; printf '0\t未协商 HTTP/2（h2）\t%s\t%s\t%s\t%s\n' "$tls" "${alpn:--}" "${curve:--}" "${cert:--}"; return 0
+  fi
+  if [[ "$curve" != X25519* ]]; then
+    rm -f "$output"; printf '0\t未提供 X25519 系列密钥交换\t%s\t%s\t%s\t%s\n' "$tls" "$alpn" "${curve:--}" "${cert:--}"; return 0
+  fi
   [[ -n "$cert" ]] || cert=$host
   rm -f "$output"
-  printf '%s\t%s\t%s\t%s\n' "$tls" "$alpn" "$curve" "$cert"
+  printf '1\t-\t%s\t%s\t%s\t%s\n' "$tls" "$alpn" "$curve" "$cert"
 }
-scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
-  local work host file sample latency metadata tls alpn curve cert successes total min max avg jitter configured
+scan_reality_candidates(){ # outputs host, selectable, reason, successes, average-ms, jitter-ms, TLS, ALPN, curve, certificate
+  local work host file sample latency metadata selectable reason tls alpn curve cert successes total min max avg jitter configured
   local -a candidates=("$@") pids=()
   if ((${#candidates[@]} == 0)); then
     configured=$(reality_target_candidates) || return 1
@@ -1421,8 +1431,13 @@ scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS
   for host in "${candidates[@]}"; do
     file="$work/$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '_').result"
     (
-      metadata=$(probe_reality_metadata "$host") || exit 0
-      IFS=$'\t' read -r tls alpn curve cert <<<"$metadata"
+      metadata=$(probe_reality_metadata "$host") || metadata=$'0\t探测程序异常\t-\t-\t-\t-'
+      IFS=$'\t' read -r selectable reason tls alpn curve cert <<<"$metadata"
+      if [[ "$selectable" != 1 ]]; then
+        printf '%s\t0\t%s\t0\t999999\t999999\t%s\t%s\t%s\t%s\n' \
+          "$host" "$reason" "$tls" "$alpn" "$curve" "$cert" > "$file"
+        exit 0
+      fi
       successes=0; total=0; min=2147483647; max=0
       for ((sample=1; sample<=REALITY_SCAN_SAMPLES; sample++)); do
         if latency=$(probe_reality_once "$host" "$sample"); then
@@ -1436,40 +1451,49 @@ scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS
       else
         avg=999999; jitter=999999
       fi
-      printf '%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
-        "$host" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
+      if ((successes >= REALITY_SCAN_SAMPLES - 1)); then
+        selectable=1; reason='通过严格兼容性与稳定性检测'
+      else
+        selectable=0; reason="TLS 握手稳定性不足（${successes}/${REALITY_SCAN_SAMPLES}）"
+      fi
+      printf '%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
+        "$host" "$selectable" "$reason" "$successes" "$avg" "$jitter" "$tls" "$alpn" "$curve" "$cert" > "$file"
     ) &
     pids+=("$!")
   done
   for sample in "${pids[@]}"; do wait "$sample" || true; done
-  # Prefer fully successful and low-latency targets; require at least 2/3 successful samples.
-  awk -F '\t' -v minimum="$((REALITY_SCAN_SAMPLES - 1))" '$2 >= minimum' "$work"/*.result |
-    sort -t $'\t' -k2,2nr -k3,3n -k4,4n |
-    head -n 10
+  # Show every configured target. Selectable targets sort first by stability, latency and jitter.
+  sort -t $'\t' -k2,2nr -k4,4nr -k5,5n -k6,6n "$work"/*.result
 }
 choose_scanned_reality_sni(){
-  local results choice i host successes avg jitter tls alpn curve cert candidate
+  local results choice i host selectable reason successes avg jitter tls alpn curve cert candidate
   local -a rows=()
   reality_targets_are_current || yellow '当前扫描使用的是本机自定义或旧候选清单；如需恢复当前渠道默认项，请返回并选择 4。'
   results=$(scan_reality_candidates) || true
-  [[ -n "$results" ]] || { red '候选清单中的目标均未达到稳定性要求，原配置未改变。'; return 0; }
+  [[ -n "$results" ]] || { red '候选清单为空或扫描未产生结果，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
   menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
-  dim '延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动。'
-  # printf counts UTF-8 bytes, while CJK characters take two terminal cells.
-  # The compensated widths below keep the Chinese header over its ASCII data.
-  printf '%-4s %-25s %-7s %-4s %-5s %-22s %-26s%10s%10s%7s\n' \
-    '序' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
+  dim '展示全部候选。仅“可选”项同时通过：受信证书/SNI、TLS 1.3、h2、X25519 系列，以及至少 2/3 次握手。'
+  dim '延迟为 DNS + TCP + TLS 握手；可选项优先按成功次数、平均延迟和抖动排序。'
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
-    printf '%-3d %-23s %-5s %-4s %-5s %-18s %-24s %4d ms %4d ms %d/%d\n' \
-      "$((i + 1))" "$host" '可用' "$tls" "$alpn" "$curve" "$cert" "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
+    IFS=$'\t' read -r host selectable reason successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
+    if [[ "$selectable" == 1 ]]; then
+      printf '%2d. [可选] %s\n' "$((i + 1))" "$host"
+      printf '    TLS %s | ALPN %s | 密钥交换 %s | 证书 %s\n' "$tls" "$alpn" "$curve" "$cert"
+      printf '    平均 %d ms | 抖动 %d ms | 成功 %d/%d\n' "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
+    else
+      printf '%2d. [不可选] %s\n' "$((i + 1))" "$host"
+      printf '    原因：%s\n' "$reason"
+      [[ "$tls" == - ]] || printf '    TLS %s | ALPN %s | 密钥交换 %s | 证书 %s | 成功 %d/%d\n' \
+        "$tls" "$alpn" "$curve" "$cert" "$successes" "$REALITY_SCAN_SAMPLES"
+    fi
   done
   menu_back '返回 Reality 设置'
   ask '请选择扫描目标：' choice
   cancel_input "$choice" && return 0
-  [[ "$choice" =~ ^([1-9]|10)$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
-  IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
+  [[ "$choice" =~ ^[1-9][0-9]*$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
+  IFS=$'\t' read -r host selectable reason successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
+  [[ "$selectable" == 1 ]] || { yellow "该目标不可选择：${reason}"; return 0; }
   jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
     yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
   candidate=$(jq --arg x "$host" '
@@ -1486,7 +1510,7 @@ set_reality_sni(){
   menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   printf '  当前 SNI：%s\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
   printf '  候选清单：%s\n\n' "$(reality_targets_status)"
-  menu_item 1 '扫描候选清单并选择（显示前 10 个）'
+  menu_item 1 '扫描候选清单并选择（展示全部结果）'
   menu_item 2 '扫描自定义目标'
   menu_item 3 "查看候选清单位置：$(reality_targets_file)"
   menu_item 4 '从当前渠道重新下载候选清单（覆盖本机清单）'
@@ -1501,7 +1525,9 @@ set_reality_sni(){
       valid_host "$host" || { red '域名格式无效。'; return 0; }
       [[ "$host" != *:* && ! "$host" =~ ^[0-9.]+$ ]] || { red 'Reality SNI 必须填写域名。'; return 0; }
       results=$(scan_reality_candidates "$host") || true
-      [[ -n "$results" ]] || { red '该目标未通过稳定性和 Reality 兼容性检测，原配置未改变。'; return 0; }
+      [[ -n "$results" ]] || { red '该目标未产生扫描结果，原配置未改变。'; return 0; }
+      IFS=$'\t' read -r _ selectable reason _ <<<"$results"
+      [[ "$selectable" == 1 ]] || { red "该目标不可选：${reason}。原配置未改变。"; return 0; }
       jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
         yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
       candidate=$(jq --arg x "$host" '
