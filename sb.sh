@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.12'
+SCRIPT_VERSION='v26.7.25-fork.13'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -297,6 +297,23 @@ sync_reality_targets(){ # [force: 0|1]
   fi
   install -d -m 755 "$STATE_DIR"
   install -m 644 "$temp" "$target_file"
+}
+reality_targets_are_current(){
+  local target_file
+  target_file=$(reality_targets_file)
+  [[ -s "$target_file" ]] &&
+    [[ "$(sha256 "$target_file" | awk '{print $1}')" == "$REALITY_TARGETS_SHA256" ]]
+}
+reality_targets_status(){
+  local target_file
+  target_file=$(reality_targets_file)
+  if [[ ! -s "$target_file" ]]; then
+    printf '尚未准备（扫描时会下载并校验当前渠道清单）'
+  elif reality_targets_are_current; then
+    printf '当前渠道默认清单（已校验）'
+  else
+    printf '本机自定义或旧清单（选 4 可覆盖为当前渠道默认清单）'
+  fi
 }
 reality_target_candidates(){ # prints validated local file entries, one per line
   local target_file raw target count=0 seen=$'\n'
@@ -1433,6 +1450,7 @@ scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS
 choose_scanned_reality_sni(){
   local results choice i host successes avg jitter tls alpn curve cert candidate
   local -a rows=()
+  reality_targets_are_current || yellow '当前扫描使用的是本机自定义或旧候选清单；如需恢复当前渠道默认项，请返回并选择 4。'
   results=$(scan_reality_candidates) || true
   [[ -n "$results" ]] || { red '候选清单中的目标均未达到稳定性要求，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
@@ -1466,7 +1484,8 @@ choose_scanned_reality_sni(){
 set_reality_sni(){
   local choice host results candidate
   menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
-  printf '  当前 SNI：%s\n\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
+  printf '  当前 SNI：%s\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
+  printf '  候选清单：%s\n\n' "$(reality_targets_status)"
   menu_item 1 '扫描候选清单并选择（显示前 10 个）'
   menu_item 2 '扫描自定义目标'
   menu_item 3 "查看候选清单位置：$(reality_targets_file)"

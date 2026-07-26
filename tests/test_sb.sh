@@ -387,6 +387,15 @@ reality_targets=$(reality_target_candidates)
 [[ $(wc -l <<<"$reality_targets" | tr -d ' ') -ge 10 ]]
 [[ $(head -n1 <<<"$reality_targets") == www.cloudflare.com ]]
 [[ $(sort <<<"$reality_targets" | uniq | wc -l | tr -d ' ') -eq $(wc -l <<<"$reality_targets" | tr -d ' ') ]]
+reality_targets_are_current
+[[ $(reality_targets_status) == '当前渠道默认清单（已校验）' ]]
+printf '# local override marker\n' >> "$(reality_targets_file)"
+if reality_targets_are_current; then
+  echo 'edited Reality target file was incorrectly reported as current' >&2
+  exit 1
+fi
+[[ $(reality_targets_status) == *'本机自定义或旧清单'* ]]
+cp "$ROOT/assets/reality-targets.txt" "$(reality_targets_file)"
 # Binary/NUL bytes in openssl output stay in a temporary file and never enter a Bash variable.
 timeout(){
   printf 'New, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256\nServer Temp Key: X25519, 253 bits\n'
