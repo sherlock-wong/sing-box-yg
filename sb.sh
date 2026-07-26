@@ -38,11 +38,6 @@ SBWPPH_ARM64_SHA256=4a8f0419e4b848b99017128d532bd760f6daa4a7b0bc9f59ff166105db5c
 CLOUDFLARED_VERSION=2026.7.3
 CLOUDFLARED_AMD64_SHA256=9d71c677db00134c1bd4144b7783486b654ad281b1ea62b4972098d19f770f17
 CLOUDFLARED_ARM64_SHA256=65259e652a7bea08bf5df603233ab22b8bf3116af8df9f9206209af6a1b955c0
-METACUBEX_RELEASE=2026-07-24T23:32:15Z
-METACUBEX_GEOIP_ASSET=488939089
-METACUBEX_GEOIP_SHA256=fad057ea2b145d243383db031b5804836e92de30203f31691e974cb14820bf36
-METACUBEX_GEOSITE_ASSET=488939110
-METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa
 REALITY_SCAN_SAMPLES=3
 REALITY_TARGETS_SHA256=eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda
 ANYTLS_DEFAULT_PADDING='["stop=8","0=30-30","1=100-400","2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000","3=9-9,500-1000","4=500-1000","5=500-1000","6=500-1000","7=500-1000"]'
@@ -1364,10 +1359,27 @@ download_github_asset(){ # asset-id sha output label
     -o "$out" "https://api.github.com/repos/MetaCubeX/meta-rules-dat/releases/assets/$id" || die "下载失败：$label"
   verify "$out" "$expected" "$label"
 }
+metacubex_release_assets(){ # official latest release -> asset-id<TAB>name<TAB>sha256
+  local release
+  release=$(curl --fail --location --retry 2 --proto '=https' --tlsv1.2 \
+    -H 'Accept: application/vnd.github+json' \
+    https://api.github.com/repos/MetaCubeX/meta-rules-dat/releases/latest) ||
+    die '无法读取 MetaCubeX 官方发布元数据。'
+  jq -er '
+    [.assets[] | select(.name=="geoip.db" or .name=="geosite.db") |
+      {id, name, sha:(.digest // "" | sub("^sha256:"; ""))}] |
+    if length==2 and (map(.name)|sort)==["geoip.db","geosite.db"] and
+       all(.[]; .id > 0 and (.sha|test("^[0-9a-f]{64}$")))
+    then .[] | [.id,.name,.sha] | @tsv else error("missing verified rule assets") end
+  ' <<<"$release" || die 'MetaCubeX 官方发布未提供完整 SHA-256，拒绝下载规则数据库。'
+}
 install_rule_databases(){
+  local id name digest
   WORKDIR=$(tmpdir)
-  download_github_asset "$METACUBEX_GEOIP_ASSET" "$METACUBEX_GEOIP_SHA256" "$WORKDIR/geoip.db" "MetaCubeX geoip.db ${METACUBEX_RELEASE}"
-  download_github_asset "$METACUBEX_GEOSITE_ASSET" "$METACUBEX_GEOSITE_SHA256" "$WORKDIR/geosite.db" "MetaCubeX geosite.db ${METACUBEX_RELEASE}"
+  while IFS=$'\t' read -r id name digest; do
+    download_github_asset "$id" "$digest" "$WORKDIR/$name" "MetaCubeX $name（官方发布 SHA-256）"
+  done < <(metacubex_release_assets)
+  [[ -s "$WORKDIR/geoip.db" && -s "$WORKDIR/geosite.db" ]] || die 'MetaCubeX 规则数据库下载不完整。'
   install -m 644 "$WORKDIR/geoip.db" "$STATE_DIR/geoip.db"
   install -m 644 "$WORKDIR/geosite.db" "$STATE_DIR/geosite.db"
 }
