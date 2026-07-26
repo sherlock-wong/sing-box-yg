@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.7'
+SCRIPT_VERSION='v26.7.25-vpnm.8'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -2408,13 +2408,29 @@ domain_certificate_wizard(){
 }
 show_certificate(){
   local id name cert mode der_pin spki_pin source
-  echo '已启用协议的证书绑定（未启用协议不参与服务，也不在此列表中）：'
+  echo '普通 TLS 协议的证书绑定（Reality 使用自身密钥与目标 SNI，不使用证书库）：'
   jq '{
     bindings:(.protocols | to_entries |
       map(select((.key=="vmess" or .key=="hy2" or .key=="anytls") and .value.enabled) |
           {key:.key,value:{domain:.value.domain,certificate_id:.value.certificate_id}}) | from_entries),
-    inactive_protocols:(.protocols | to_entries |
-      map(select((.key=="vmess" or .key=="hy2" or .key=="anytls") and (.value.enabled|not)) | .key)),
+    inactive_protocols:(.protocols | [
+      (if .vless.enabled then empty else {
+        protocol:"vless", type:"Vless-Reality", sni:.vless.sni,
+        certificate:"不适用（Reality 使用私钥、公钥、Short ID 与目标 SNI）"
+      } end),
+      (if .vmess.enabled then empty else {
+        protocol:"vmess", type:"Vmess-WS", domain:.vmess.domain,
+        certificate_id:.vmess.certificate_id
+      } end),
+      (if .hy2.enabled then empty else {
+        protocol:"hy2", type:"Hysteria2", domain:.hy2.domain,
+        certificate_id:.hy2.certificate_id
+      } end),
+      (if .anytls.enabled then empty else {
+        protocol:"anytls", type:"AnyTLS", domain:.anytls.domain,
+        certificate_id:.anytls.certificate_id
+      } end)
+    ]),
     certificates
   }' "$STATE_FILE"
   while IFS=$'\t' read -r id name cert mode; do

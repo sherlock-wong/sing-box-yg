@@ -1,6 +1,8 @@
-v26.7.25-vpnm.7
+v26.7.25-vpnm.8
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
+
+改进：证书库视图会明确列出未启用的 Vless-Reality，并标注其不适用普通 TLS 证书库，同时展示 Reality SNI；普通 TLS 证书绑定仅适用于 Vmess-WS、Hysteria2 和 AnyTLS。
 
 修复：MetaCubeX 规则库只提供会被替换的 `latest` 资源，旧资产编号会返回 404。安装时改为读取官方发布 API，要求 geoip.db 与 geosite.db 都提供官方 SHA-256 digest，并对实际下载文件再次校验；缺失 digest 时拒绝安装。
 
