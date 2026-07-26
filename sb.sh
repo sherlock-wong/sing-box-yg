@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.14'
+SCRIPT_VERSION='v26.7.25-fork.15'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -52,6 +52,14 @@ ask(){ read -r -p "$1" "$2"; }
 need_root(){ [[ $EUID -eq 0 ]] || die '请使用 root 运行。'; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "缺少依赖：$1"; }
 sha256(){ sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; }
+clip_cell(){ # value display-width; ASCII ellipsis keeps terminal table columns stable
+  local value=$1 width=$2
+  if ((${#value} > width)); then
+    printf '%s...' "${value:0:$((width - 3))}"
+  else
+    printf '%s' "$value"
+  fi
+}
 verify(){ [[ "$(sha256 "$1" | awk '{print $1}')" == "$2" ]] || die "完整性校验失败：$3（已保留原配置，未执行文件）"; }
 valid_channel(){
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != *..* && "$1" != *//* && "$1" != */ ]]
@@ -1466,7 +1474,7 @@ scan_reality_candidates(){ # outputs host, selectable, reason, successes, averag
   sort -t $'\t' -k2,2nr -k4,4nr -k5,5n -k6,6n "$work"/*.result
 }
 choose_scanned_reality_sni(){
-  local results choice i host selectable reason successes avg jitter tls alpn curve cert candidate
+  local results choice i host selectable reason successes avg jitter tls alpn curve cert candidate target_cell alpn_cell curve_cell cert_cell avg_cell jitter_cell success_cell
   local -a rows=()
   reality_targets_are_current || yellow '当前扫描使用的是本机自定义或旧候选清单；如需恢复当前渠道默认项，请返回并选择 4。'
   results=$(scan_reality_candidates) || true
@@ -1475,17 +1483,24 @@ choose_scanned_reality_sni(){
   menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   dim '展示全部候选。仅“可选”项同时通过：受信证书/SNI、TLS 1.3、h2、X25519 系列，以及至少 2/3 次握手。'
   dim '延迟为 DNS + TCP + TLS 握手；可选项优先按成功次数、平均延迟和抖动排序。'
+  # Header widths compensate for CJK double-cell display width; data stays one row per target.
+  printf '%-4s %-27s %-7s %-4s %-5s %-20s %-28s %-11s %-11s %-9s\n' \
+    '序' '目标' '状态' 'TLS' 'ALPN' '密钥交换' '证书' '平均' '抖动' '成功'
   for ((i=0; i<${#rows[@]}; i++)); do
     IFS=$'\t' read -r host selectable reason successes avg jitter tls alpn curve cert <<<"${rows[$i]}"
+    target_cell=$(clip_cell "$host" 25)
+    alpn_cell=$(clip_cell "$alpn" 5)
+    curve_cell=$(clip_cell "$curve" 16)
+    cert_cell=$(clip_cell "$cert" 26)
     if [[ "$selectable" == 1 ]]; then
-      printf '%2d. [可选] %s\n' "$((i + 1))" "$host"
-      printf '    TLS %s | ALPN %s | 密钥交换 %s | 证书 %s\n' "$tls" "$alpn" "$curve" "$cert"
-      printf '    平均 %d ms | 抖动 %d ms | 成功 %d/%d\n' "$avg" "$jitter" "$successes" "$REALITY_SCAN_SAMPLES"
+      avg_cell="${avg} ms"; jitter_cell="${jitter} ms"; success_cell="${successes}/${REALITY_SCAN_SAMPLES}"
+      printf '%-3d %-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
+        "$((i + 1))" "$target_cell" '可选' "$tls" "$alpn_cell" "$curve_cell" "$cert_cell" "$avg_cell" "$jitter_cell" "$success_cell"
     else
-      printf '%2d. [不可选] %s\n' "$((i + 1))" "$host"
-      printf '    原因：%s\n' "$reason"
-      [[ "$tls" == - ]] || printf '    TLS %s | ALPN %s | 密钥交换 %s | 证书 %s | 成功 %d/%d\n' \
-        "$tls" "$alpn" "$curve" "$cert" "$successes" "$REALITY_SCAN_SAMPLES"
+      avg_cell='-'; jitter_cell='-'; success_cell="${successes}/${REALITY_SCAN_SAMPLES}"
+      printf '%-3d %-25s %-7s %-4s %-5s %-16s %-26s %-9s %-9s %-7s\n' \
+        "$((i + 1))" "$target_cell" '不可' "$tls" "$alpn_cell" "$curve_cell" "$cert_cell" "$avg_cell" "$jitter_cell" "$success_cell"
+      dim "    原因：${reason}"
     fi
   done
   menu_back '返回 Reality 设置'
