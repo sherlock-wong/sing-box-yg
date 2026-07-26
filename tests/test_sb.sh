@@ -16,6 +16,10 @@ export VPNM_STATE_DIR="$TEST_ROOT/initial"
 source "$ROOT/sb.sh"
 trap 'cleanup_tmp; rm -rf "$TEST_ROOT"' EXIT
 
+# The executable banner and update comparison must stay in lockstep with the
+# published version file; otherwise a successful self-update looks stale.
+[[ "$(head -n1 "$ROOT/version")" == "$SCRIPT_VERSION" ]]
+
 # Existing systemd services must always restart after a validated config replacement.
 systemctl_calls=
 systemctl(){ systemctl_calls+="${*}"$'\n'; }
