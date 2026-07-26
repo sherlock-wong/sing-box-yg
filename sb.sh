@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.1'
+SCRIPT_VERSION='v26.7.25-vpnm.2'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -1156,8 +1156,20 @@ commit_state(){ # candidate JSON stdin
   ufw_finalize_candidate "$old_state" "$candidate"
   reconcile_hy2_hop || yellow 'Hy2 UDP 跳跃规则未能应用，请检查 iptables。'
   reconcile_argo || yellow 'Argo 服务未能启动；Sing-box 配置不受影响。'
-  reconcile_certificate_sync_schedule "$candidate" || yellow '证书自动同步计划未能更新；可在证书管理中手动同步。'
+  reconcile_certificate_sync_schedule "$candidate" || yellow '证书自动同步计划未能更新；可在证书库中手动同步。'
   green '配置已通过 JSON、Sing-box 与 Xray（如启用）检查；双内核配置已原子替换并应用。'
+}
+commit_certificate_library_state(){ # candidate JSON stdin; never changes protocol bindings or restarts cores
+  local candidate tmp state_tmp
+  candidate=$(normalize_state <<<"$(cat)") || { red '证书库状态 JSON 无效，原配置未改变。'; return 1; }
+  validate_state "$candidate" || { red '证书库状态无效，原配置未改变。'; return 1; }
+  tmp=$(tmpdir); state_tmp="$tmp/protocols.json"
+  printf '%s\n' "$candidate" > "$state_tmp"
+  install -d -m 755 "$STATE_DIR"
+  chmod 600 "$state_tmp"
+  mv "$state_tmp" "$STATE_FILE"
+  reconcile_certificate_sync_schedule "$candidate" || yellow '证书自动同步计划未能更新；可在证书库中手动同步。'
+  green '证书库已原子更新；协议绑定、监听端口和运行服务均未改变。'
 }
 apply_current_state(){
   [[ -f "$STATE_FILE" ]] || { red '缺少协议状态文件，无法应用配置。'; return 1; }
@@ -1915,7 +1927,7 @@ set_certificate(){
   ask '私钥完整路径（回车/0 返回上一级）：' key
   cancel_input "$key" && return 0
   certificate_pair_valid "$cert" "$key" || { red '证书/私钥不可读、格式无效或公私钥不匹配。'; return 0; }
-  menu_header '客户端证书校验' '主菜单 / 配置 / 证书管理 / 导入证书'
+  menu_header '客户端证书校验' '主菜单 / 证书库 / 导入证书'
   menu_item 1 '自签证书固定 SHA256'
   menu_item 2 '系统 CA 验证（ACME / 受信证书，推荐）'
   menu_back '取消导入'
@@ -1931,7 +1943,7 @@ set_certificate(){
        "$(certificate_spki_sha256 "$cert")" =~ ^[A-Za-z0-9+/]{43}=$ ]] ||
       { red '证书固定值计算失败，原配置未改变。'; return 0; }
   fi
-  menu_header '证书续期同步' '主菜单 / 配置 / 证书管理 / 导入证书'
+  menu_header '证书续期同步' '主菜单 / 证书库 / 导入证书'
   menu_item 1 '跟踪当前源文件；续期后自动校验、同步并重启（推荐）'
   menu_item 2 '只保存当前快照；以后手动重新导入'
   menu_back '取消导入'
@@ -1945,7 +1957,7 @@ set_certificate(){
     --arg source_cert "$source_cert" --arg source_key "$source_key" --argjson auto_sync "$auto_sync" \
     '.certificates[$id]={name:$name,cert:$cert,key:$key,mode:$mode,insecure:$insecure,
       source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:$auto_sync}}' "$STATE_FILE")
-  if printf '%s\n' "$candidate" | commit_state; then
+  if printf '%s\n' "$candidate" | commit_certificate_library_state; then
     green "证书已加入证书库：${name}（${id}）。请使用“为协议选择证书”完成绑定。"
   fi
 }
@@ -1985,41 +1997,20 @@ persist_domain_certificate(){ # domain source-cert source-key; sets FOUND_CERT, 
   if [[ "$source_key" != "$dir/private.key" ]]; then install -m 600 "$source_key" "$dir/private.key"; fi
   FOUND_CERT="$dir/cert.pem"; FOUND_KEY="$dir/private.key"
 }
-bind_trusted_domain_certificate(){ # tag domain cert key
-  local tag=$1 domain=$2 cert=$3 key=$4 source_cert=$3 source_key=$4 candidate id
+store_trusted_domain_certificate(){ # domain cert key; adds to library without binding a protocol
+  local domain=$1 cert=$2 key=$3 source_cert=$2 source_key=$3 candidate id
   persist_domain_certificate "$domain" "$cert" "$key"
   cert=$FOUND_CERT; key=$FOUND_KEY; id=$FOUND_CERT_ID
-  if [[ "$tag" == all ]]; then
-    candidate=$(jq --arg d "$domain" '
-      .protocols.vmess.domain=$d | .protocols.hy2.domain=$d |
-      .protocols.anytls.domain=$d
-    ' "$STATE_FILE")
-  else
-    candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
-  fi
   candidate=$(jq --arg id "$id" --arg domain "$domain" --arg cert "$cert" --arg key "$key" \
     --arg source_cert "$source_cert" --arg source_key "$source_key" \
     '.certificates[$id]={name:$domain,cert:$cert,key:$key,mode:"trusted",insecure:false,
-      source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:true}}' <<<"$candidate")
-  if [[ "$tag" == all ]]; then
-    candidate=$(jq --arg id "$id" '
-      .protocols.vmess.certificate_id=$id |
-      .protocols.hy2.certificate_id=$id |
-      .protocols.anytls.certificate_id=$id
-    ' <<<"$candidate")
-  else
-    candidate=$(jq --arg t "$tag" --arg id "$id" '.protocols[$t].certificate_id=$id' <<<"$candidate")
-  fi
-  if printf '%s\n' "$candidate" | commit_state; then
-    if [[ "$tag" == all ]]; then
-      green "域名证书已保存到证书库并绑定到全部 TLS 协议：${domain}"
-    else
-      green "域名证书已保存到证书库并绑定到 $(protocol_label "$tag")：${domain}"
-    fi
-    green '请在客户端重新导入最新订阅/分享链接。'
+      source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:true}}' "$STATE_FILE")
+  if printf '%s\n' "$candidate" | commit_certificate_library_state; then
+    green "域名证书已保存到证书库：${domain}"
+    green '证书尚未绑定协议；请在对应协议的“从证书库选择证书”中完成绑定。'
     return 0
   fi
-  red '证书绑定失败，已保留原自签证书和协议配置。'
+  red '证书入库失败，原证书库和协议配置均已保留。'
   return 1
 }
 certificate_source_status(){ # source object -> short status
@@ -2151,7 +2142,7 @@ EOF
 /usr/local/bin/vpnm cert-sync --quiet
 EOF
   else
-    yellow '未检测到 systemd 或 OpenRC periodic；请在证书管理中手动同步。'
+    yellow '未检测到 systemd 或 OpenRC periodic；请在证书库中手动同步。'
   fi
 }
 toggle_certificate_auto_sync(){
@@ -2164,17 +2155,17 @@ toggle_certificate_auto_sync(){
   jq -e --arg id "$id" '.certificates[$id].source.type=="files"' "$STATE_FILE" >/dev/null || { red '未找到可跟踪源文件的证书。'; return 0; }
   menu_item 1 '开启自动同步'
   menu_item 2 '关闭自动同步'
-  menu_back '返回证书管理'
+  menu_back '返回证书库'
   ask '请选择 [0-2]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in 1|2) ;; *) red '无效输入。'; return 0;; esac
   candidate=$(jq --arg id "$id" --argjson enabled "$([[ "$choice" == 1 ]] && echo true || echo false)" '.certificates[$id].source.auto_sync=$enabled' "$STATE_FILE")
-  printf '%s\n' "$candidate" | commit_state
+  printf '%s\n' "$candidate" | commit_certificate_library_state
 }
-domain_certificate_wizard(){ # target tag
-  local tag=$1 domain choice
-  menu_header '域名证书向导' "主菜单 / 域名证书 / $( [[ "$tag" == all ]] && printf '全部协议' || protocol_label "$tag" )"
-  dim 'Cloudflare DNS 记录应保持灰云；脚本会先查找可复用证书，再提供 ACME 或手动导入。'
+domain_certificate_wizard(){
+  local domain choice
+  menu_header '申请或收录域名证书' '主菜单 / 证书库 / 域名证书'
+  dim '证书只会加入证书库，不会自动绑定任何协议。Cloudflare DNS 记录应保持灰云。'
   ask '准备使用的证书域名（Cloudflare 请保持灰云；回车/0 返回上一级）：' domain
   cancel_input "$domain" && return 0
   valid_host "$domain" && [[ "$domain" != *:* && ! "$domain" =~ ^[0-9.]+$ ]] ||
@@ -2202,22 +2193,7 @@ domain_certificate_wizard(){ # target tag
       *) red '无效输入。'; return 0;;
     esac
   fi
-  bind_trusted_domain_certificate "$tag" "$domain" "$FOUND_CERT" "$FOUND_KEY" || true
-}
-domain_certificate_target_menu(){
-  local choice tag
-  menu_header '域名证书向导' '主菜单 / 域名证书'
-  menu_item 1 '应用到 Vmess-WS'
-  menu_item 2 '应用到 Hysteria2'
-  menu_item 3 '应用到 AnyTLS'
-  menu_item 4 '应用到全部普通 TLS 协议'
-  menu_back '返回上一级'
-  ask '请选择 [0-4]：' choice
-  case "$choice" in
-    1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;4)tag=all;;0|'')return 0;;
-    *)red '无效输入。'; return 0;;
-  esac
-  domain_certificate_wizard "$tag"
+  store_trusted_domain_certificate "$domain" "$FOUND_CERT" "$FOUND_KEY" || true
 }
 show_certificate(){
   local id name cert mode der_pin spki_pin source
@@ -2260,31 +2236,11 @@ set_tls_domain(){
   candidate=$(jq --arg t "$tag" --arg d "$domain" '.protocols[$t].domain=$d' "$STATE_FILE")
   apply_state "$candidate"
 }
-tls_domain_menu(){
-  local choice tag
-  while :; do
-    menu_header '修改协议证书域名' '主菜单 / 配置 / 证书管理 / 证书域名'
-    menu_item 1 'Vmess-WS'
-    menu_item 2 'Hysteria2'
-    menu_item 3 'AnyTLS'
-    menu_back '返回证书管理'
-    ask '请选择 [0-3]：' choice
-    case "$choice" in
-      1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;0|'')return 0;;*)red '无效输入。'; continue;;
-    esac
-    set_tls_domain "$tag"
-  done
-}
-select_certificate_for_protocol(){
-  local target_choice tag index choice id name mode cert domain candidate new_domain key certificate_row
+select_certificate_for_protocol(){ # protocol tag
+  local tag=$1 index choice id name mode cert domain candidate new_domain key certificate_row
   local -a certificate_rows=()
-  menu_header '选择协议证书' '主菜单 / 配置 / 证书管理 / 选择证书'
-  menu_item 1 'Vmess-WS'
-  menu_item 2 'Hysteria2'
-  menu_item 3 'AnyTLS'
-  menu_back '返回证书管理'
-  ask '请选择协议 [0-3]：' target_choice
-  case "$target_choice" in 1)tag=vmess;;2)tag=hy2;;3)tag=anytls;;0|'')return 0;;*)red '无效输入。'; return 0;;esac
+  case "$tag" in vmess|hy2|anytls) ;; *) red '该协议不使用普通 TLS 证书。'; return 0;; esac
+  menu_header '从证书库选择证书' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 证书"
   domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")
   while IFS= read -r certificate_row; do certificate_rows+=("$certificate_row"); done < <(
     jq -r '.certificates | to_entries[] | [.key,.value.name,(.value.mode // (if .value.insecure then "pinned" else "trusted" end)),.value.cert] | @tsv' "$STATE_FILE"
@@ -2295,7 +2251,7 @@ select_certificate_for_protocol(){
     IFS=$'\t' read -r id name mode cert <<<"${certificate_rows[$index]}"
     printf '%d %s [%s] %s\n' "$((index + 1))" "$name" "$mode" "$cert"
   done
-  menu_back '返回证书管理'
+  menu_back '返回协议设置'
   ask '请选择证书：' choice
   cancel_input "$choice" && return 0
   [[ "$choice" =~ ^[1-9][0-9]*$ && "$choice" -le "${#certificate_rows[@]}" ]] || { red '无效输入。'; return 0; }
@@ -2321,20 +2277,17 @@ select_certificate_for_protocol(){
 certificate_menu(){
   local choice
   while :; do
-    menu_header '证书管理' '主菜单 / 配置 / 证书管理'
-    menu_item 1 '查看证书库与协议绑定'
+    menu_header '证书库 / ACME' '主菜单 / 证书库'
+    menu_item 1 '查看证书库与协议绑定情况'
     menu_item 2 '导入证书到证书库'
-    menu_item 3 '修改协议证书域名'
-    menu_item 4 '域名证书向导（检测 / ACME / 自动绑定）'
-    menu_item 5 '为协议选择证书'
-    menu_item 6 '立即同步受管证书来源'
-    menu_item 7 '开启或关闭证书自动同步'
-    menu_back '返回配置菜单'
-    ask '请选择 [0-7]：' choice
+    menu_item 3 '申请或收录域名证书（ACME / 已有证书）'
+    menu_item 4 '立即同步受管证书来源'
+    menu_item 5 '开启或关闭证书自动同步'
+    menu_back '返回主菜单'
+    ask '请选择 [0-5]：' choice
     case "$choice" in
-      1)show_certificate;;2)set_certificate;;3)tls_domain_menu;;
-      4)domain_certificate_target_menu;;5)select_certificate_for_protocol;;
-      6)sync_managed_certificates;;7)toggle_certificate_auto_sync;;
+      1)show_certificate;;2)set_certificate;;3)domain_certificate_wizard;;
+      4)sync_managed_certificates;;5)toggle_certificate_auto_sync;;
       0|'')return 0;;*)red '无效输入。';;
     esac
   done
@@ -2494,27 +2447,29 @@ specialty_menu(){
         menu_item 3 '修改 CDN 地址'
         menu_item 4 '配置 Argo 固定隧道'
         menu_item 5 '修改证书域名'
+        menu_item 6 '从证书库选择证书'
         menu_back '返回协议设置'
-        ask '请选择 [0-5]：' choice
-        case "$choice" in 1)set_protocol vmess path 'WS Path（以 / 开头）：';;2)set_bool vmess tls;;3)set_protocol vmess cdn 'CDN 地址：';;4)set_argo;;5)set_tls_domain vmess;;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-6]：' choice
+        case "$choice" in 1)set_protocol vmess path 'WS Path（以 / 开头）：';;2)set_bool vmess tls;;3)set_protocol vmess cdn 'CDN 地址：';;4)set_argo;;5)set_tls_domain vmess;;6)select_certificate_for_protocol vmess;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       hy2)
         menu_item 1 '修改证书域名'
         menu_item 2 '修改上行带宽'
         menu_item 3 '修改下行带宽'
         menu_item 4 '配置 UDP 端口跳跃'
+        menu_item 5 '从证书库选择证书'
         menu_back '返回协议设置'
-        ask '请选择 [0-4]：' choice
-        case "$choice" in 1)set_tls_domain hy2;;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;0|'')return 0;;*)red '无效输入。';;esac
+        ask '请选择 [0-5]：' choice
+        case "$choice" in 1)set_tls_domain hy2;;2)set_number hy2 up_mbps '上行 Mbps：';;3)set_number hy2 down_mbps '下行 Mbps：';;4)set_hy2_hop;;5)select_certificate_for_protocol hy2;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
       anytls)
         dim '普通 TLS 的 SNI 必须匹配实际证书域名，不使用 Reality 的第三方目标。'
-        menu_item 1 '仅修改证书域名'
-        menu_item 2 '域名证书向导（检测 / ACME / 自动绑定）'
+        menu_item 1 '修改证书域名'
+        menu_item 2 '从证书库选择证书'
         menu_item 3 '管理 AnyTLS Padding 方案'
         menu_back '返回协议设置'
         ask '请选择 [0-3]：' choice
-        case "$choice" in 1)set_tls_domain "$tag";;2)domain_certificate_wizard "$tag";;3)set_anytls_padding;;0|'')return 0;;*)red '无效输入。';;esac
+        case "$choice" in 1)set_tls_domain "$tag";;2)select_certificate_for_protocol anytls;;3)set_anytls_padding;;0|'')return 0;;*)red '无效输入。';;esac
         ;;
     esac
   done
@@ -2562,14 +2517,13 @@ configure_menu(){
     menu_item 3 '修改分享链接的对外地址'
     menu_item 4 '显示节点二维码'
     menu_item 5 '重新生成订阅'
-    menu_item 6 '证书管理'
-    menu_item 7 '应用当前配置并重启'
+    menu_item 6 '应用当前配置并重启'
     menu_back '返回主菜单'
-    ask '请选择 [0-7]：' m
+    ask '请选择 [0-6]：' m
     case "$m" in
       1) show_nodes;;2) protocol_menu;;3) set_address;;4) show_qr;;
       5) if confirm_change '确认重新生成全部订阅？' '只读取当前已启用协议，不修改服务端配置。'; then generate_subscriptions; green '订阅已更新。'; fi;;
-      6)certificate_menu;;7)apply_current_state || true;;0|'') return 0;;*) red '无效输入。';;
+      6)apply_current_state || true;;0|'') return 0;;*) red '无效输入。';;
     esac
   done
 }
@@ -2583,14 +2537,14 @@ offer_tls_certificate_setup(){
   menu_header '安装完成：证书建议' '主菜单 / 安装 / 证书'
   yellow '普通 TLS 协议当前使用安全的自签证书固定模式。'
   dim '有自有域名时，推荐使用灰云 DNS + ACME 受信证书。'
-  menu_item 1 '现在进入证书管理'
+  menu_item 1 '现在进入证书库 / ACME'
   menu_item 2 '暂时保留固定模式'
   menu_back '返回主菜单'
   ask '请选择 [0-2]：' choice
   case "$choice" in
     1) certificate_menu;;
     2|0|'') return 0;;
-    *) red '无效输入；暂时保留固定模式，可稍后使用 sb → 2 → 6 配置。';;
+    *) red '无效输入；暂时保留固定模式，可稍后使用 vpnm → 7 管理证书库。';;
   esac
 }
 
@@ -2784,7 +2738,7 @@ main(){
     menu_item 4 '更新或切换 Sing-box 内核'
     menu_item 5 '更新管理'
     menu_item 6 '查看服务日志'
-    menu_item 7 '域名证书 / ACME'
+    menu_item 7 '证书库 / ACME'
     menu_item 8 'WARP'
     menu_item 9 'TCP / BBR 管理'
     menu_item 10 'WARP-plus'
@@ -2803,7 +2757,7 @@ main(){
           journalctl -u "$SERVICE_NAME" -u "$XRAY_SERVICE_NAME" -n 100 --no-pager ||
           tail -n 100 /var/log/messages
       };;
-      7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;
+      7) require_install && certificate_menu;;
       8) warp;;
       9) bbr;;
       10) require_install && install_sbwpph;;

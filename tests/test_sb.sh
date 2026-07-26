@@ -359,8 +359,7 @@ set_address <<<"0"
 set_certificate <<<"0"
 set_tls_domain anytls <<<"0"
 certificate_menu <<<"0"
-domain_certificate_wizard anytls <<<"0"
-domain_certificate_target_menu <<<"0"
+domain_certificate_wizard <<<"0"
 set_hy2_hop <<<"0"
 set_argo <<<"0"
 set_reality_sni <<<"0"
@@ -480,21 +479,21 @@ set_reality_sni <<< $'1\n1'
 eval "$saved_apply_state"
 eval "$saved_scan_reality_candidates"
 
-# The domain-certificate wizard reuses a matching certificate or validates ACME output before binding.
+# The domain-certificate wizard reuses a matching certificate or validates ACME output before adding it to the library.
 saved_find_domain_certificate=$(declare -f find_domain_certificate)
-saved_bind_trusted_domain_certificate=$(declare -f bind_trusted_domain_certificate)
+saved_store_trusted_domain_certificate=$(declare -f store_trusted_domain_certificate)
 saved_acme=$(declare -f acme)
-wizard_bind=
+wizard_store=
 wizard_acme_calls=0
 find_domain_certificate(){
   FOUND_CERT=/tmp/existing-cert.crt
   FOUND_KEY=/tmp/existing-private.key
   return 0
 }
-bind_trusted_domain_certificate(){ wizard_bind="${1}"$'\t'"${2}"$'\t'"${3}"$'\t'"${4}"; }
-domain_certificate_wizard anytls <<<"tls.example.com"
-[[ "$wizard_bind" == $'anytls\ttls.example.com\t/tmp/existing-cert.crt\t/tmp/existing-private.key' ]]
-wizard_bind=
+store_trusted_domain_certificate(){ wizard_store="${1}"$'\t'"${2}"$'\t'"${3}"; }
+domain_certificate_wizard <<<"tls.example.com"
+[[ "$wizard_store" == $'tls.example.com\t/tmp/existing-cert.crt\t/tmp/existing-private.key' ]]
+wizard_store=
 find_domain_certificate(){
   if [[ "${2:-false}" == true && $wizard_acme_calls -eq 1 ]]; then
     FOUND_CERT=/root/ygkkkca/cert.crt
@@ -504,11 +503,11 @@ find_domain_certificate(){
   return 1
 }
 acme(){ wizard_acme_calls=$((wizard_acme_calls + 1)); }
-domain_certificate_wizard anytls <<< $'tls.example.com\n1'
+domain_certificate_wizard <<< $'tls.example.com\n1'
 [[ $wizard_acme_calls -eq 1 ]]
-[[ "$wizard_bind" == $'anytls\ttls.example.com\t/root/ygkkkca/cert.crt\t/root/ygkkkca/private.key' ]]
+[[ "$wizard_store" == $'tls.example.com\t/root/ygkkkca/cert.crt\t/root/ygkkkca/private.key' ]]
 eval "$saved_find_domain_certificate"
-eval "$saved_bind_trusted_domain_certificate"
+eval "$saved_store_trusted_domain_certificate"
 eval "$saved_acme"
 
 # Different TLS protocols can bind different trusted certificates.
@@ -553,11 +552,11 @@ saved_apply_state=$(declare -f apply_state)
 captured_state=
 apply_state(){ captured_state=$1; }
 hy2_cert_index=$(jq '.certificates | to_entries | map(.key) | index("hy2") + 1' "$STATE_FILE")
-select_certificate_for_protocol <<< $'3\n'"${hy2_cert_index}"$'\nhy2.example.com'
+select_certificate_for_protocol anytls <<< "${hy2_cert_index}"$'\nhy2.example.com'
 jq -e '.protocols.anytls.certificate_id=="hy2" and .protocols.anytls.domain=="hy2.example.com"' <<<"$captured_state" >/dev/null
 eval "$saved_apply_state"
 
-# Binding a validated domain certificate passes one atomic candidate to commit_state.
+# Adding a validated domain certificate keeps protocol bindings unchanged.
 single_tls_state=$(jq '
   .protocols.vless.enabled=false | .protocols.vmess.enabled=false |
   .protocols.hy2.enabled=false |
@@ -565,20 +564,19 @@ single_tls_state=$(jq '
   .protocols.anytls.certificate_id="default"
 ' <<<"$cert_state")
 printf '%s\n' "$single_tls_state" > "$STATE_FILE"
-saved_commit_state=$(declare -f commit_state)
+saved_commit_certificate_library_state=$(declare -f commit_certificate_library_state)
 bound_candidate_file="$STATE_DIR/bound-candidate.json"
-commit_state(){ cat > "$bound_candidate_file"; }
-bind_trusted_domain_certificate anytls tls.example.com "$STATE_DIR/trusted.pem" "$STATE_DIR/trusted.key"
+commit_certificate_library_state(){ cat > "$bound_candidate_file"; }
+store_trusted_domain_certificate tls.example.com "$STATE_DIR/trusted.pem" "$STATE_DIR/trusted.key"
 jq -e '
-  .protocols.anytls.domain == "tls.example.com" and
-  (.protocols.anytls.certificate_id | startswith("cert_")) and
-  (.certificates[.protocols.anytls.certificate_id] |
-    .name=="tls.example.com" and .mode=="trusted" and .insecure==false)
+  .protocols.anytls.domain == "www.bing.com" and
+  .protocols.anytls.certificate_id == "default" and
+  (.certificates | to_entries[] | select(.value.name=="tls.example.com" and .value.mode=="trusted" and .value.insecure==false))
 ' "$bound_candidate_file" >/dev/null
-managed_cert=$(jq -r '.certificates[.protocols.anytls.certificate_id].cert' "$bound_candidate_file")
-managed_key=$(jq -r '.certificates[.protocols.anytls.certificate_id].key' "$bound_candidate_file")
+managed_cert=$(jq -r '.certificates | to_entries[] | select(.value.name=="tls.example.com") | .value.cert' "$bound_candidate_file")
+managed_key=$(jq -r '.certificates | to_entries[] | select(.value.name=="tls.example.com") | .value.key' "$bound_candidate_file")
 [[ -r "$managed_cert" && -r "$managed_key" && "$managed_cert" == "$STATE_DIR"/certificates/*/cert.pem ]]
-eval "$saved_commit_state"
+eval "$saved_commit_certificate_library_state"
 eval "$saved_certificate_matches_domain"
 
 # Managed certificate synchronization validates the renewed source before an

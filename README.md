@@ -11,7 +11,7 @@ VPS Net Manager 是一个面向个人 VPS 的网络服务管理器。它集中�
 | Sing-box | Vless-Reality、Vmess-WS、Hysteria2、AnyTLS |
 | Xray-core | 可选的 Vless-Reality 服务端，支持 SpiderX、指纹、ML-DSA-65 与回落限制 |
 | Realm | Debian/Ubuntu 上的 TCP+UDP 端口转发规则 |
-| 证书 | 多证书库、协议独立绑定、受管源文件同步与回滚 |
+| 证书 | 独立证书库、按协议选择绑定、受管源文件同步与回滚 |
 | 客户端配置 | 分享链接、二维码、Mihomo、Sing-box 与聚合订阅 |
 
 ## 安装

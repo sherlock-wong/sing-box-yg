@@ -1,10 +1,12 @@
-v26.7.25-vpnm.1
+v26.7.25-vpnm.2
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
 
 修复：MetaCubeX 规则库只提供会被替换的 `latest` 资源，旧资产编号会返回 404。安装时改为读取官方发布 API，要求 geoip.db 与 geosite.db 都提供官方 SHA-256 digest，并对实际下载文件再次校验；缺失 digest 时拒绝安装。
 
 改进：Realm 菜单增加独立的启动和停止操作。启动会校验已安装状态及至少一条规则，并设为开机启动；停止保留规则，但停止服务并取消开机启动。
+
+改进：证书库与协议绑定解耦。主菜单 `7` 只申请、导入、查看和维护证书；域名证书入库后不会自动修改协议。每个普通 TLS 协议在自身专项参数中从证书库选择所需证书。
 
 当前功能：按需管理 Sing-box 协议、可选 Xray-core Reality、Reality 目标扫描、证书库、AnyTLS、Hysteria2、Vmess-WS、WARP、TCP/BBR 与 Realm 端口转发。
 
