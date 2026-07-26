@@ -379,12 +379,14 @@ if uninstall <<<"0"; then
 fi
 [[ $apply_calls -eq 0 ]]
 
-# Reality reads all ten defaults from the separately maintained candidate file,
-# ranks stability/latency, and applies a selected top-five result.
+# Reality reads and de-duplicates the independently maintained candidate file,
+# ranks stability/latency, and exposes the top ten results.
 cp "$ROOT/assets/reality-targets.txt" "$(reality_targets_file)"
+[[ "$REALITY_TARGETS_SHA256" == "$(shasum -a 256 "$ROOT/assets/reality-targets.txt" | awk '{print $1}')" ]]
 reality_targets=$(reality_target_candidates)
-[[ $(wc -l <<<"$reality_targets" | tr -d ' ') -eq 10 ]]
-[[ $(head -n1 <<<"$reality_targets") == www.cloudflare.com && $(tail -n1 <<<"$reality_targets") == dl.google.com ]]
+[[ $(wc -l <<<"$reality_targets" | tr -d ' ') -ge 10 ]]
+[[ $(head -n1 <<<"$reality_targets") == www.cloudflare.com ]]
+[[ $(sort <<<"$reality_targets" | uniq | wc -l | tr -d ' ') -eq $(wc -l <<<"$reality_targets" | tr -d ' ') ]]
 # Binary/NUL bytes in openssl output stay in a temporary file and never enter a Bash variable.
 timeout(){
   printf 'New, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256\nServer Temp Key: X25519, 253 bits\n'
@@ -435,6 +437,22 @@ set_reality_sni <<< $'1\n1'
 validate_state "$captured_state"
 render_config "$captured_state" "$STATE_DIR/reality-candidate.json"
 "$STATE_DIR/sing-box" check -c "$STATE_DIR/reality-candidate.json"
+eval "$saved_apply_state"
+eval "$saved_scan_reality_candidates"
+
+# A populated scan exposes ten selectable ranked rows, including row 10.
+saved_scan_reality_candidates=$(declare -f scan_reality_candidates)
+saved_apply_state=$(declare -f apply_state)
+captured_state=
+apply_state(){ captured_state=$1; }
+scan_reality_candidates(){
+  local n
+  for n in {1..10}; do
+    printf 'target%s.example\t3\t%s\t1\t1.3\th2\tX25519\ttarget%s.example\n' "$n" "$((20 + n))" "$n"
+  done
+}
+set_reality_sni <<< $'1\n10'
+[[ $(jq -r '.protocols.vless.sni' <<<"$captured_state") == target10.example ]]
 eval "$saved_apply_state"
 eval "$saved_scan_reality_candidates"
 

@@ -1,6 +1,8 @@
 # Reality target candidates.
 # One hostname per line.  The scanner verifies TLS 1.3, ALPN, certificate
 # validation and measures DNS + TCP + TLS handshake time from the VPS.
+# Domains with known or likely mainland-China SNI/routing instability stay
+# commented out below; use a mainland endpoint before enabling them manually.
 www.cloudflare.com
 www.microsoft.com
 www.amazon.com
@@ -10,4 +12,48 @@ www.nvidia.com
 www.amd.com
 www.intel.com
 www.sony.com
-dl.google.com
+academy.nvidia.com
+addons.mozilla.org
+aod.itunes.apple.com
+gateway.icloud.com
+cdn-dynmedia-1.microsoft.com
+# cname.vercel-dns.com   # Vercel routing: mainland availability is not stable
+d1.awsstatic.com
+download-installer.cdn.mozilla.net
+# github.io              # historical regional SNI/DNS disruption; test first
+images-na.ssl-images-amazon.com
+itunes.apple.com
+lol.secure.dyn.riotcdn.net
+m.media-amazon.com
+mensura.cdn-apple.com
+one-piece.com
+osxapps.itunes.apple.com
+player.live-video.net
+react.dev
+redis.io
+s0.awsstatic.com
+software.download.prss.microsoft.com
+swcdn.apple.com
+swdist.apple.com
+updates.cdn-apple.com
+# vercel-dns.com         # Vercel routing: mainland availability is not stable
+vuejs-jp.org
+vuejs.org
+www.asus.com
+www.calstatela.edu
+www.caltech.edu
+www.cisco.com
+www.fom-international.com
+# www.google-analytics.com # Google domain: unsuitable for a mainland SNI
+www.java.com
+www.lovelive-anime.jp
+www.mongodb.com
+www.mysql.com
+www.oracle.com
+www.python.org
+www.suffolk.edu
+www.suny.edu
+www.swift.com
+www.u-can.co.jp
+www.umcg.nl
+zh-hk.vuejs.org

@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.11'
+SCRIPT_VERSION='v26.7.25-fork.12'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='sing-box-yg'
 STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
@@ -40,7 +40,7 @@ METACUBEX_GEOIP_SHA256=fad057ea2b145d243383db031b5804836e92de30203f31691e974cb14
 METACUBEX_GEOSITE_ASSET=488939110
 METACUBEX_GEOSITE_SHA256=2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa
 REALITY_SCAN_SAMPLES=3
-REALITY_TARGETS_SHA256=be5f4a08310e703d16bd9f0534f697e6f6030eedfaa9819464df5229c052c20f
+REALITY_TARGETS_SHA256=eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda
 
 red(){ printf '\033[31;1m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32;1m%s\033[0m\n' "$*"; }
@@ -282,10 +282,10 @@ download_verified(){ # URL SHA OUT DESCRIPTION
 }
 
 reality_targets_file(){ printf '%s/reality-targets.txt\n' "$STATE_DIR"; }
-sync_reality_targets(){
-  local target_file temp
+sync_reality_targets(){ # [force: 0|1]
+  local force=${1:-0} target_file temp
   target_file=$(reality_targets_file)
-  [[ -s "$target_file" ]] && return 0
+  [[ "$force" != 1 && -s "$target_file" ]] && return 0
   temp=$(tmpdir)/reality-targets.txt
   if ! curl --fail --location --retry 2 --proto '=https' --tlsv1.2 -o "$temp" "$FORK_RAW/assets/reality-targets.txt"; then
     red '无法下载 Reality 候选域名清单。' >&2
@@ -299,7 +299,7 @@ sync_reality_targets(){
   install -m 644 "$temp" "$target_file"
 }
 reality_target_candidates(){ # prints validated local file entries, one per line
-  local target_file raw target count=0
+  local target_file raw target count=0 seen=$'\n'
   target_file=$(reality_targets_file)
   sync_reality_targets || return 1
   while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -309,6 +309,8 @@ reality_target_candidates(){ # prints validated local file entries, one per line
       red "Reality 候选域名清单包含无效域名：${target}" >&2
       return 1
     }
+    [[ "$seen" == *$'\n'"$target"$'\n'* ]] && continue
+    seen+="$target"$'\n'
     printf '%s\n' "$target"
     count=$((count + 1))
   done < "$target_file"
@@ -1426,13 +1428,13 @@ scan_reality_candidates(){ # outputs host, successes, average-ms, jitter-ms, TLS
   # Prefer fully successful and low-latency targets; require at least 2/3 successful samples.
   awk -F '\t' -v minimum="$((REALITY_SCAN_SAMPLES - 1))" '$2 >= minimum' "$work"/*.result |
     sort -t $'\t' -k2,2nr -k3,3n -k4,4n |
-    head -n 5
+    head -n 10
 }
 choose_scanned_reality_sni(){
   local results choice i host successes avg jitter tls alpn curve cert candidate
   local -a rows=()
   results=$(scan_reality_candidates) || true
-  [[ -n "$results" ]] || { red '10 个候选均未达到稳定性要求，原配置未改变。'; return 0; }
+  [[ -n "$results" ]] || { red '候选清单中的目标均未达到稳定性要求，原配置未改变。'; return 0; }
   while IFS= read -r candidate; do rows+=("$candidate"); done <<<"$results"
   menu_header 'Reality 目标扫描结果' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   dim '延迟为 DNS + TCP + TLS 握手；可用性优先，其次平均延迟和抖动。'
@@ -1448,7 +1450,7 @@ choose_scanned_reality_sni(){
   menu_back '返回 Reality 设置'
   ask '请选择扫描目标：' choice
   cancel_input "$choice" && return 0
-  [[ "$choice" =~ ^[1-5]$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
+  [[ "$choice" =~ ^([1-9]|10)$ && "$choice" -le "${#rows[@]}" ]] || { red '无效输入。'; return 0; }
   IFS=$'\t' read -r host successes avg jitter tls alpn curve cert <<<"${rows[$((choice - 1))]}"
   jq -e '.protocols.vless.xray.mldsa65_seed!=""' "$STATE_FILE" >/dev/null &&
     yellow 'Reality 目标已改变，ML-DSA-65 将先关闭；请在 Xray 参数中重新检测并启用。'
@@ -1465,11 +1467,12 @@ set_reality_sni(){
   local choice host results candidate
   menu_header 'Reality SNI' '主菜单 / 配置 / 协议 / Vless-Reality / Reality SNI'
   printf '  当前 SNI：%s\n\n' "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
-  menu_item 1 '扫描候选清单并选择（默认 10 个）'
+  menu_item 1 '扫描候选清单并选择（显示前 10 个）'
   menu_item 2 '扫描自定义目标'
   menu_item 3 "查看候选清单位置：$(reality_targets_file)"
+  menu_item 4 '从当前渠道重新下载候选清单（覆盖本机清单）'
   menu_back '返回专项参数'
-  ask '请选择 [0-3]：' choice
+  ask '请选择 [0-4]：' choice
   cancel_input "$choice" && return 0
   case "$choice" in
     1) choose_scanned_reality_sni;;
@@ -1496,6 +1499,11 @@ set_reality_sni(){
         printf '\n'; green '候选清单已就绪；可按“一行一个域名”的格式编辑该文件。'
         sed -n '1,120p' "$(reality_targets_file)"
       fi
+      ;;
+    4)
+      confirm_change '重新下载并覆盖本机 Reality 候选清单？' \
+        '会从当前更新渠道下载并校验清单；你在本机文件中手工加入的域名将被替换。' || return 0
+      sync_reality_targets 1 && green '候选清单已更新；下次扫描将使用新清单。'
       ;;
     *) red '无效输入。';;
   esac
