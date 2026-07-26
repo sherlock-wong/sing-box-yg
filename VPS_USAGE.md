@@ -20,6 +20,13 @@ VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 安装时可用逗号多选协议：`1,3,4` 代表 Vless-Reality、Hysteria2、AnyTLS；至少选择一个。Sing-box 1.10.7 不支持 AnyTLS。Vless-Reality 可选择 Sing-box 或 Xray-core 服务端，其他协议均由 Sing-box 处理。
 
+选择协议后会进入“初始配置”：
+
+- **推荐默认**：每个协议自动挑选当时未被占用的随机端口；Reality 使用 `www.apple.com`，普通 TLS 协议使用 `www.bing.com`，分享链接地址自动探测。
+- **自定义**：可逐个指定协议端口；每个端口也可直接回车保留随机。还可一次设定 Reality SNI、普通 TLS 域名（本次选择的 Vmess-WS、Hysteria2、AnyTLS 共用）以及分享链接对外地址。脚本会检查端口占用和本次安装中的重复端口。
+
+自定义普通 TLS 域名时，脚本会生成与该域名匹配的初始固定自签证书，使初始配置可直接使用；之后如需公开受信证书，再通过主菜单 `7` 申请或导入，并在协议内绑定即可。
+
 主菜单 `2` 进入配置：
 
 - 查看当前节点、分享链接、二维码和订阅。

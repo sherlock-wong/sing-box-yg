@@ -179,6 +179,29 @@ port_available(){ return 0; }
 selected=$(select_protocols 1.13.14 <<<"1,3,4")
 eval "$saved_port_available"
 jq -e '[.protocols|to_entries[]|select(.value.enabled)|.key] == ["vless","hy2","anytls"]' <<<"$selected" >/dev/null
+
+# First-install custom mode keeps selected ports and initial address/domain
+# settings in the state, while the default mode remains random and preset.
+default_setup=$(initial_default_settings)
+jq -e '.custom==false and .ports=={} and .reality_sni=="www.apple.com" and .tls_domain=="www.bing.com"' <<<"$default_setup" >/dev/null
+saved_port_available=$(declare -f port_available)
+port_available(){ return 0; }
+custom_setup=$(choose_initial_setup 'vless vmess anytls' <<< $'2\n21001\n21002\n21003\nreality.example.com\ntls.example.com\nnode.example.com')
+custom_state=$(state_for_protocol_tags 1.13.14 'vless vmess anytls' "$custom_setup")
+eval "$saved_port_available"
+jq -e '
+  .public_address=="node.example.com" and
+  .protocols.vless.port==21001 and .protocols.vmess.port==21002 and .protocols.anytls.port==21003 and
+  .protocols.vless.sni=="reality.example.com" and
+  .protocols.vless.xray.target=="reality.example.com:443" and
+  .protocols.vless.xray.server_names==["reality.example.com"] and
+  .protocols.vmess.domain=="tls.example.com" and .protocols.anytls.domain=="tls.example.com"
+' <<<"$custom_state" >/dev/null
+openssl x509 -in "$STATE_DIR/cert.pem" -noout -text | grep -Fq 'DNS:tls.example.com'
+if choose_initial_setup vless <<<"0" >/dev/null; then
+  echo 'initial setup cancellation unexpectedly succeeded' >&2
+  exit 1
+fi
 [[ $(choose_initial_reality_engine <<<"1") == sing-box ]]
 [[ $(choose_initial_reality_engine <<<"2") == xray ]]
 if choose_initial_reality_engine <<<"0" >/dev/null; then

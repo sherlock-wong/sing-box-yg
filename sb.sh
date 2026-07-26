@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.2'
+SCRIPT_VERSION='v26.7.25-vpnm.3'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -185,6 +185,9 @@ valid_host(){
   else
     [[ ${#value} -le 253 && "$value" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
   fi
+}
+valid_domain_name(){
+  valid_host "$1" && [[ "$1" != *:* && ! "$1" =~ ^[0-9.]+$ ]]
 }
 valid_uuid(){ [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; }
 anytls_padding_valid(){ # mode [line...]
@@ -831,22 +834,23 @@ restart_service(){
 }
 
 new_state(){
-  local core=$1 id reality_private reality_public sid cert_key cert_crt
+  local core=$1 tls_domain=${2:-www.bing.com} id reality_private reality_public sid cert_key cert_crt
   local pair
+  valid_domain_name "$tls_domain" || tls_domain=www.bing.com
   id=$($STATE_DIR/sing-box generate uuid)
   pair=$($STATE_DIR/sing-box generate reality-keypair)
   reality_private=$(printf '%s\n' "$pair" | awk -F': ' '/PrivateKey/{print $2}')
   reality_public=$(printf '%s\n' "$pair" | awk -F': ' '/PublicKey/{print $2}')
   [[ -n "$reality_private" && -n "$reality_public" ]] || die 'Reality 密钥生成失败。'
   sid=$(openssl rand -hex 4); cert_key="$STATE_DIR/private.key"; cert_crt="$STATE_DIR/cert.pem"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj '/CN=www.bing.com' \
-    -addext 'subjectAltName=DNS:www.bing.com' \
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=${tls_domain}" \
+    -addext "subjectAltName=DNS:${tls_domain}" \
     -addext 'basicConstraints=critical,CA:FALSE' \
     -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
     -addext 'extendedKeyUsage=serverAuth' \
     -keyout "$cert_key" -out "$cert_crt" >/dev/null 2>&1
-  jq -n --arg core "$core" --arg xray "$XRAY_DEFAULT" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" \
-    '{schema:4,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:"www.bing.com",certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:"www.bing.com",certificate_id:"default",padding:{mode:"default",lines:[]}}},certificates:{default:{name:"默认自签证书",cert:$cert,key:$key,mode:"pinned",insecure:true,source:{type:"snapshot",auto_sync:false}}}}'
+  jq -n --arg core "$core" --arg xray "$XRAY_DEFAULT" --arg id "$id" --arg priv "$reality_private" --arg pub "$reality_public" --arg sid "$sid" --arg cert "$cert_crt" --arg key "$cert_key" --arg tlsdomain "$tls_domain" \
+    '{schema:4,core:$core,xray_core:$xray,public_address:"",protocols:{vless:{enabled:false,engine:"sing-box",name:"vless-reality",port:0,uuid:$id,sni:"www.apple.com",private_key:$priv,public_key:$pub,short_id:$sid,xray:{target:"www.apple.com:443",server_names:["www.apple.com"],fingerprint:"chrome",spider_x:"/",max_time_diff:0,min_client_ver:"",max_client_ver:"",mldsa65_seed:"",mldsa65_verify:"",fallback_profile:"off"}},vmess:{enabled:false,engine:"sing-box",name:"vmess-ws",port:0,uuid:$id,path:("/"+$id+"-vm"),tls:true,domain:$tlsdomain,certificate_id:"default",cdn:"",argo_domain:"",argo_token:""},hy2:{enabled:false,engine:"sing-box",name:"hysteria2",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",up_mbps:100,down_mbps:100,udp_hop:""},anytls:{enabled:false,engine:"sing-box",name:"anytls",port:0,password:$id,domain:$tlsdomain,certificate_id:"default",padding:{mode:"default",lines:[]}}},certificates:{default:{name:("初始固定证书（"+$tlsdomain+"）"),cert:$cert,key:$key,mode:"pinned",insecure:true,source:{type:"snapshot",auto_sync:false}}}}'
 }
 
 choose_protocol_tags(){ # core -> space-separated tags
@@ -880,18 +884,114 @@ choose_initial_reality_engine(){
   ask '请选择 [0-2]：' choice
   case "$choice" in 1)printf 'sing-box\n';;2)printf 'xray\n';;0|'')return 2;;*)red '无效输入，安装已取消。' >&2; return 2;;esac
 }
-state_for_protocol_tags(){ # core "tag tag ..." -> JSON state
-  local core=$1 tags=$2 p tag state
-  state=$(new_state "$core")
+initial_default_settings(){
+  jq -cn '{custom:false,ports:{},reality_sni:"www.apple.com",tls_domain:"www.bing.com",public_address:""}'
+}
+choose_initial_setup(){ # tags -> initial settings JSON
+  local tags=$1 choice tag port reality_sni=www.apple.com tls_domain=www.bing.com public_address= ports='{}'
+  while :; do
+    menu_header '安装向导：初始配置' '主菜单 / 安装 / 初始配置' >&2
+    menu_item 1 '推荐默认：随机未占用端口、预设 Reality SNI、预设 TLS 域名、自动对外地址' >&2
+    menu_item 2 '自定义：逐项指定端口、Reality SNI、普通 TLS 域名和对外地址' >&2
+    menu_back '取消安装并返回主菜单' >&2
+    ask '请选择 [0-2]：' choice
+    case "$choice" in 1) initial_default_settings; return 0;;2) break;;0|'') return 2;;*) red '无效输入。' >&2;;esac
+  done
+  dim '每个端口直接回车会继续随机分配；输入 0 可取消本次安装。' >&2
   for tag in $tags; do
     while :; do
-      p=$(random_port)
-      [[ " $(jq -r '[.protocols[].port]|join(" ")' <<<"$state") " != *" $p "* ]] &&
-        port_available "$p" && break
+      ask "$(protocol_label "$tag") ${tag:+$(protocol_transport "$tag")} 端口（1-65535，回车随机，0 取消安装）：" port
+      [[ "$port" == 0 ]] && return 2
+      [[ -z "$port" ]] && { port=0; break; }
+      valid_port "$port" || { red '端口无效。' >&2; continue; }
+      port_available "$port" || { red '端口已被其他进程占用。' >&2; continue; }
+      jq -e --argjson p "$port" 'to_entries[] | select(.value == $p)' <<<"$ports" >/dev/null && {
+        red '该端口已分配给本次安装中的其他协议。' >&2; continue
+      }
+      break
     done
+    ports=$(jq --arg t "$tag" --argjson p "$port" '.[$t]=$p' <<<"$ports")
+  done
+  if [[ " $tags " == *' vless '* ]]; then
+    while :; do
+      ask 'Reality SNI（回车使用 www.apple.com，0 取消安装）：' reality_sni
+      [[ "$reality_sni" == 0 ]] && return 2
+      [[ -z "$reality_sni" ]] && { reality_sni=www.apple.com; break; }
+      valid_domain_name "$reality_sni" || { red 'Reality SNI 必须是有效域名。' >&2; continue; }
+      break
+    done
+  fi
+  if [[ " $tags " == *' vmess '* || " $tags " == *' hy2 '* || " $tags " == *' anytls '* ]]; then
+    while :; do
+      ask '普通 TLS 域名（应用于本次安装的 Vmess/Hy2/AnyTLS；回车使用 www.bing.com，0 取消安装）：' tls_domain
+      [[ "$tls_domain" == 0 ]] && return 2
+      [[ -z "$tls_domain" ]] && { tls_domain=www.bing.com; break; }
+      valid_domain_name "$tls_domain" || { red '普通 TLS 域名必须是有效域名。' >&2; continue; }
+      break
+    done
+  fi
+  while :; do
+    ask '分享链接对外地址（回车自动探测，可填 IPv4/IPv6/域名，0 取消安装）：' public_address
+    [[ "$public_address" == 0 ]] && return 2
+    [[ -z "$public_address" ]] && break
+    valid_host "$public_address" || { red '对外地址无效。' >&2; continue; }
+    break
+  done
+  jq -cn --argjson ports "$ports" --arg reality "$reality_sni" --arg tls "$tls_domain" --arg address "$public_address" \
+    '{custom:true,ports:$ports,reality_sni:$reality,tls_domain:$tls,public_address:$address}'
+}
+initial_setup_summary(){ # settings tags
+  local settings=$1 tags=$2 tag port label
+  if jq -e '.custom' <<<"$settings" >/dev/null; then
+    printf '  初始模式：自定义\n'
+    for tag in $tags; do
+      port=$(jq -r --arg t "$tag" '.ports[$t] // 0' <<<"$settings")
+      label=$(protocol_label "$tag")
+      if valid_port "$port"; then printf '  %s 端口：%s/%s\n' "$label" "$port" "$(protocol_transport "$tag")"
+      else printf '  %s 端口：随机未占用端口\n' "$label"; fi
+    done
+    [[ " $tags " == *' vless '* ]] && printf '  Reality SNI：%s\n' "$(jq -r '.reality_sni' <<<"$settings")"
+    if [[ " $tags " == *' vmess '* || " $tags " == *' hy2 '* || " $tags " == *' anytls '* ]]; then
+      printf '  普通 TLS 域名：%s（初始使用匹配的固定证书）\n' "$(jq -r '.tls_domain' <<<"$settings")"
+    fi
+    printf '  分享链接对外地址：%s\n' "$(jq -r '.public_address | if length==0 then "自动探测" else . end' <<<"$settings")"
+  else
+    printf '  初始模式：推荐默认（端口随机未占用；其余使用预设值）\n'
+  fi
+}
+state_for_protocol_tags(){ # core "tag tag ..." [settings JSON] -> JSON state
+  local core=$1 tags=$2 settings=${3:-} p tag configured_port state tls_domain reality_sni public_address
+  [[ -n "$settings" ]] || settings=$(initial_default_settings)
+  tls_domain=$(jq -r '.tls_domain // "www.bing.com"' <<<"$settings")
+  reality_sni=$(jq -r '.reality_sni // "www.apple.com"' <<<"$settings")
+  public_address=$(jq -r '.public_address // ""' <<<"$settings")
+  valid_domain_name "$tls_domain" && valid_domain_name "$reality_sni" && { [[ -z "$public_address" ]] || valid_host "$public_address"; } || return 1
+  state=$(new_state "$core" "$tls_domain")
+  for tag in $tags; do
+    configured_port=$(jq -r --arg t "$tag" '.ports[$t] // 0' <<<"$settings")
+    if valid_port "$configured_port"; then
+      port_available "$configured_port" || return 1
+      jq -e --argjson p "$configured_port" '[.protocols[].port] | index($p)' <<<"$state" >/dev/null && return 1
+      p=$configured_port
+    else
+      while :; do
+        p=$(random_port)
+        [[ " $(jq -r '[.protocols[].port]|join(" ")' <<<"$state") " != *" $p "* ]] &&
+          port_available "$p" && break
+      done
+    fi
     state=$(jq --arg t "$tag" --argjson p "$p" \
       '.protocols[$t].enabled=true | .protocols[$t].port=$p' <<<"$state")
   done
+  state=$(jq --arg sni "$reality_sni" --arg domain "$tls_domain" --arg address "$public_address" '
+    .public_address=$address |
+    .protocols.vless.sni=$sni |
+    .protocols.vless.xray.target=($sni+":443") |
+    .protocols.vless.xray.server_names=[$sni] |
+    .protocols.vmess.domain=$domain |
+    .protocols.hy2.domain=$domain |
+    .protocols.anytls.domain=$domain
+  ' <<<"$state")
   printf '%s\n' "$state"
 }
 select_protocols(){ # compatibility wrapper used by tests and library callers
@@ -2579,7 +2679,7 @@ offer_tls_certificate_setup(){
 }
 
 install_flow(){
-  local core choice state tags tag labels= vless_engine=sing-box
+  local core choice state tags tag labels= vless_engine=sing-box initial_settings
   menu_header '安装向导：选择内核' '主菜单 / 安装'
   menu_item 1 "${SB_DEFAULT}（推荐，支持 AnyTLS）"
   menu_item 2 "${SB_110}（兼容版，不支持 AnyTLS）"
@@ -2591,20 +2691,26 @@ install_flow(){
     vless_engine=$(choose_initial_reality_engine) ||
       { yellow '安装已取消，系统未做修改。'; return 0; }
   fi
+  initial_settings=$(choose_initial_setup "$tags") ||
+    { yellow '安装已取消，系统未做修改。'; return 0; }
   for tag in $tags; do labels+="${labels:+、}$(protocol_label "$tag")"; done
   menu_header '安装摘要' '主菜单 / 安装 / 确认'
   printf '  Sing-box 内核：%s\n' "$core"
   printf '  启用协议：%s\n' "$labels"
   [[ " $tags " == *' vless '* ]] &&
     printf '  Reality 内核：%s\n' "$([[ "$vless_engine" == xray ]] && printf 'Xray-core %s' "$XRAY_DEFAULT" || printf 'Sing-box %s' "$core")"
+  initial_setup_summary "$initial_settings" "$tags"
   printf '  更新渠道：%s\n' "$FORK_BRANCH"
   dim '确认后才会安装依赖、下载并校验文件、生成配置和启动服务。'
-  confirm_change '确认开始安装？' '协议端口将自动选择未占用端口，安装后可随时修改。' ||
+  confirm_change '确认开始安装？' '端口、初始域名和对外地址将按上方摘要创建；安装后仍可随时修改。' ||
     { yellow '安装已取消，系统未做修改。'; return 0; }
   install_packages
   sync_reality_targets || { red '无法准备经过校验的 Reality 候选域名清单，安装未继续。'; return 0; }
   install_singbox "$core"; install_rule_databases
-  state=$(state_for_protocol_tags "$core" "$tags")
+  state=$(state_for_protocol_tags "$core" "$tags" "$initial_settings") || {
+    red '初始端口或域名在安装前校验失败，请重新安装并调整输入。'
+    return 0
+  }
   state=$(jq --arg engine "$vless_engine" '.protocols.vless.engine=$engine' <<<"$state")
   if [[ "$vless_engine" == xray ]]; then install_xray; fi
   if ! printf '%s\n' "$state" | commit_state; then
