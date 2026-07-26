@@ -2770,13 +2770,15 @@ configure_menu(){
 }
 
 offer_tls_certificate_setup(){
-  local choice
-  jq -e '
-    .protocols.anytls.enabled or .protocols.hy2.enabled or
-    (.protocols.vmess.enabled and .protocols.vmess.tls)
-  ' "$STATE_FILE" >/dev/null || return 0
+  local choice tag mode needs_fixed=false
+  for tag in vmess hy2 anytls; do
+    jq -e --arg t "$tag" '.protocols[$t].enabled and ($t!="vmess" or .protocols[$t].tls)' "$STATE_FILE" >/dev/null || continue
+    mode=$(certificate_mode "$STATE_FILE" "$tag")
+    [[ "$mode" == pinned ]] && needs_fixed=true
+  done
+  [[ "$needs_fixed" == true ]] || return 0
   menu_header '安装完成：证书建议' '主菜单 / 安装 / 证书'
-  yellow '普通 TLS 协议当前使用安全的自签证书固定模式。'
+  yellow '仍有普通 TLS 协议使用安全的自签证书固定模式。'
   dim '有自有域名时，推荐使用灰云 DNS + ACME 受信证书。'
   menu_item 1 '现在进入证书库 / ACME'
   menu_item 2 '暂时保留固定模式'
@@ -2985,15 +2987,15 @@ main(){
   while :; do
     main_dashboard
     menu_item 1 '安装'
-    menu_item 2 '配置、节点与订阅'
-    menu_item 3 '应用当前配置并重启'
-    menu_item 4 '更新或切换 Sing-box 内核'
+    menu_item 2 '配置、节点与订阅（需先安装）'
+    menu_item 3 '应用当前配置并重启（需先安装）'
+    menu_item 4 '更新或切换 Sing-box 内核（需先安装）'
     menu_item 5 '更新管理'
-    menu_item 6 '查看服务日志'
-    menu_item 7 '证书库 / ACME'
+    menu_item 6 '查看服务日志（需先安装）'
+    menu_item 7 '证书库 / ACME（需先安装）'
     menu_item 8 'WARP'
     menu_item 9 'TCP / BBR 管理'
-    menu_item 10 'WARP-plus'
+    menu_item 10 'WARP-plus（需先安装）'
     menu_item 11 '卸载'
     menu_item 12 'Realm 端口转发（Debian / Ubuntu）'
     menu_back '退出'

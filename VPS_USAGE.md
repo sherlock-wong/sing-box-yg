@@ -36,6 +36,8 @@ VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 每项配置先写入临时文件，再执行 JSON、`sing-box check` 和 Xray 检查（如启用）。失败时会保留原配置、原端口和原服务。
 
+未安装网络服务时，配置、应用配置、内核切换、服务日志、证书库和 WARP-plus 没有可操作的服务状态，因此菜单会标注“需先安装”。更新管理、WARP、TCP/BBR 管理和 Realm 端口转发不依赖 Sing-box 安装，可以单独使用。
+
 ## 4. Reality
 
 Reality SNI 候选来自 `assets/reality-targets.txt`，安装时复制到状态目录。扫描展示全部候选并分为三类：

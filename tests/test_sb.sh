@@ -229,6 +229,8 @@ jq -e --arg id "$initial_tls_cert_id" '
   .certificates[$id].source.auto_sync==true
 ' <<<"$initial_tls_state" >/dev/null
 [[ -r "$(jq -r --arg id "$initial_tls_cert_id" '.certificates[$id].cert' <<<"$initial_tls_state")" ]]
+printf '%s\n' "$initial_tls_state" > "$STATE_FILE"
+[[ -z "$(offer_tls_certificate_setup <<< '')" ]]
 [[ $(choose_initial_reality_engine <<<"1") == sing-box ]]
 [[ $(choose_initial_reality_engine <<<"2") == xray ]]
 if choose_initial_reality_engine <<<"0" >/dev/null; then
