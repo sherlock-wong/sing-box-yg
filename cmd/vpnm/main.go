@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sherlock-wong/sing-box-yg/internal/reality"
+	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 )
 
 func main() {
@@ -22,7 +22,7 @@ func main() {
 	case "targets-validate":
 		targetsValidate(os.Args[2:])
 	case "version":
-		fmt.Println("sbyg development")
+		fmt.Println("vpnm development")
 	default:
 		usage()
 		os.Exit(2)
@@ -31,7 +31,7 @@ func main() {
 
 func realityScan(arguments []string) {
 	flags := flag.NewFlagSet("reality-scan", flag.ExitOnError)
-	targetsPath := flags.String("targets-file", "/etc/s-box/reality-targets.txt", "target hostname file")
+	targetsPath := flags.String("targets-file", "/etc/vps-net-manager/reality-targets.txt", "target hostname file")
 	samples := flags.Int("samples", 3, "samples per target")
 	top := flags.Int("top", 0, "number of ranked results (0 shows all)")
 	timeout := flags.Duration("timeout", 35*time.Second, "whole scan timeout")
@@ -48,7 +48,7 @@ func realityScan(arguments []string) {
 
 func targetsValidate(arguments []string) {
 	flags := flag.NewFlagSet("targets-validate", flag.ExitOnError)
-	targetsPath := flags.String("targets-file", "/etc/s-box/reality-targets.txt", "target hostname file")
+	targetsPath := flags.String("targets-file", "/etc/vps-net-manager/reality-targets.txt", "target hostname file")
 	flags.Parse(arguments)
 	targets, err := reality.LoadTargets(*targetsPath)
 	fatalIf(err)
@@ -61,10 +61,10 @@ func fatalIf(err error) {
 	if err == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "sbyg:", err)
+	fmt.Fprintln(os.Stderr, "vpnm:", err)
 	os.Exit(1)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sbyg reality-scan|targets-validate [flags]")
+	fmt.Fprintln(os.Stderr, "usage: vpnm reality-scan|targets-validate [flags]")
 }

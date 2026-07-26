@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# VPS-only sing-box-yg manager.
+# VPS Net Manager: Sing-box, Xray-core and Realm for personal VPS.
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-fork.17'
+SCRIPT_VERSION='v26.7.25-vpnm.1'
 FORK_OWNER='sherlock-wong'
-FORK_REPO='sing-box-yg'
-STATE_DIR="${SBYG_STATE_DIR:-/etc/s-box}"
+FORK_REPO='vps-net-manager'
+STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
 STATE_FILE="$STATE_DIR/protocols.json"
 CONFIG_FILE="$STATE_DIR/sb.json"
 XRAY_CONFIG_FILE="$STATE_DIR/xray.json"
-SERVICE_NAME=sing-box
-XRAY_SERVICE_NAME=sing-box-xray
+SERVICE_NAME=vps-net-manager
+XRAY_SERVICE_NAME=vps-net-manager-xray
+ARGO_SERVICE_NAME=vps-net-manager-argo
+CERT_SYNC_SERVICE_NAME=vps-net-manager-cert-sync
+UFW_MARKER=vps-net-manager
+HY2_CHAIN=VPNM_HY2
 FORK_BRANCH=
 FORK_RAW=
 
@@ -74,7 +78,7 @@ set_channel(){
   FORK_RAW="https://raw.githubusercontent.com/${FORK_OWNER}/${FORK_REPO}/${FORK_BRANCH}"
 }
 load_channel(){
-  local selected=${SBYG_CHANNEL:-}
+  local selected=${VPNM_CHANNEL:-}
   if [[ -z "$selected" && -r "$STATE_DIR/channel" ]]; then
     IFS= read -r selected < "$STATE_DIR/channel" || true
   fi
@@ -110,22 +114,8 @@ confirm_change(){
   [[ "$x" == 1 ]]
 }
 load_channel
-normalize_state(){ # schema 1/2/3 -> schema 4/per-protocol engine, padding and certificate sources
+normalize_state(){ # normalize current schema defaults before validation/rendering
   jq --arg xray "$XRAY_DEFAULT" '
-    if .schema == 1 then
-      .certificates = {
-        default: ((.certificate // {}) + {
-          name:"迁移证书",
-          mode:(.certificate.mode // (if .certificate.insecure then "pinned" else "trusted" end)),
-          insecure:(.certificate.insecure // true)
-        })
-      } |
-      .protocols.vmess.certificate_id="default" |
-      .protocols.hy2.certificate_id="default" |
-      .protocols.anytls.certificate_id="default" |
-      del(.certificate)
-    else . end |
-    del(.protocols.tuic) |
     .protocols.vless.engine = (.protocols.vless.engine // "sing-box") |
     .protocols.vmess.engine = "sing-box" |
     .protocols.hy2.engine = "sing-box" |
@@ -175,11 +165,11 @@ client_certificate_pin(){
   [[ "$pin" =~ ^[A-Za-z0-9+/]{43}=$ ]] || { red '证书公钥 SHA256 计算失败，拒绝生成不安全的客户端配置。' >&2; return 1; }
   printf '%s\n' "$pin"
 }
-TMP_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-registry.XXXXXX")
-tmpdir(){ local d; d=$(mktemp -d "${TMPDIR:-/tmp}/sing-box-yg.XXXXXX"); printf '%s\n' "$d" >> "$TMP_REGISTRY"; printf '%s\n' "$d"; }
+TMP_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/vps-net-manager-registry.XXXXXX")
+tmpdir(){ local d; d=$(mktemp -d "${TMPDIR:-/tmp}/vps-net-manager.XXXXXX"); printf '%s\n' "$d" >> "$TMP_REGISTRY"; printf '%s\n' "$d"; }
 cleanup_tmp(){
   local d
-  while IFS= read -r d; do [[ "$d" == "${TMPDIR:-/tmp}"/sing-box-yg.* && -d "$d" ]] && rm -rf "$d"; done < "$TMP_REGISTRY"
+  while IFS= read -r d; do [[ "$d" == "${TMPDIR:-/tmp}"/vps-net-manager.* && -d "$d" ]] && rm -rf "$d"; done < "$TMP_REGISTRY"
   rm -f "$TMP_REGISTRY"
 }
 trap cleanup_tmp EXIT
@@ -290,14 +280,14 @@ service_runtime_status(){
   fi
   state=$(cat "$STATE_FILE")
   if state_uses_engine "$state" sing-box; then
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sing-box 2>/dev/null; then sing=运行
-    elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box status >/dev/null 2>&1; then sing=运行
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then sing=运行
+    elif command -v rc-service >/dev/null 2>&1 && rc-service "$SERVICE_NAME" status >/dev/null 2>&1; then sing=运行
     else sing=停止
     fi
   fi
   if state_uses_engine "$state" xray; then
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sing-box-xray 2>/dev/null; then xray=运行
-    elif command -v rc-service >/dev/null 2>&1 && rc-service sing-box-xray status >/dev/null 2>&1; then xray=运行
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$XRAY_SERVICE_NAME" 2>/dev/null; then xray=运行
+    elif command -v rc-service >/dev/null 2>&1 && rc-service "$XRAY_SERVICE_NAME" status >/dev/null 2>&1; then xray=运行
     else xray=停止
     fi
   fi
@@ -314,7 +304,7 @@ main_dashboard(){
   if realm_install_valid; then
     realm=$(systemctl is-active "$(realm_service_name)" 2>/dev/null || printf '未运行')
   fi
-  menu_header "sing-box-yg ${SCRIPT_VERSION}" '主菜单'
+  menu_header "VPS Net Manager ${SCRIPT_VERSION}" '主菜单'
   printf '  渠道：%-18s 服务：%s\n' "$FORK_BRANCH" "$(service_runtime_status)"
   printf '  内核：Sing-box %s%s\n' "$core" "$xray"
   printf '  协议：%s 个已启用\n' "$protocols"
@@ -474,7 +464,7 @@ realm_dir(){ printf '%s/realm\n' "$STATE_DIR"; }
 realm_binary(){ printf '%s/realm\n' "$(realm_dir)"; }
 realm_state_file(){ printf '%s/rules.json\n' "$(realm_dir)"; }
 realm_config_file(){ printf '%s/config.toml\n' "$(realm_dir)"; }
-realm_service_name(){ printf 'sing-box-realm.service\n'; }
+realm_service_name(){ printf 'vps-net-manager-realm.service\n'; }
 realm_supported_os(){
   local id=
   [[ -r /etc/os-release ]] || return 1
@@ -514,7 +504,7 @@ realm_validate_state(){
 realm_render_config(){ # state output
   local state=$1 out=$2 listen remote
   {
-    printf '%s\n' '# Managed by sing-box-yg. Edit via sb → Realm 端口转发 to preserve state.'
+    printf '%s\n' '# Managed by VPS Net Manager. Edit via vpnm → Realm 端口转发 to preserve state.'
     printf '%s\n' '[log]' 'level = "warn"' '' '[network]' 'no_tcp = false' 'use_udp = true' 'ipv6_only = false' ''
     while IFS=$'\t' read -r host port remote_host remote_port; do
       listen=$(realm_endpoint_address "$host" "$port")
@@ -529,7 +519,7 @@ realm_write_service(){
   bin=$(realm_binary); config=$(realm_config_file); unit=/etc/systemd/system/$(realm_service_name)
   cat > "$unit" <<EOF
 [Unit]
-Description=sing-box-yg Realm port forwarding
+Description=VPS Net Manager Realm port forwarding
 After=network-online.target
 Wants=network-online.target
 
@@ -722,9 +712,9 @@ realm_menu(){
 
 write_services(){
   if command -v systemctl >/dev/null; then
-    cat > /etc/systemd/system/sing-box.service <<EOF
+    cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
-Description=sing-box-yg
+Description=VPS Net Manager Sing-box
 After=network-online.target
 [Service]
 Type=simple
@@ -733,9 +723,9 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 EOF
-    cat > /etc/systemd/system/sing-box-xray.service <<EOF
+    cat > /etc/systemd/system/${XRAY_SERVICE_NAME}.service <<EOF
 [Unit]
-Description=sing-box-yg Xray
+Description=VPS Net Manager Xray-core
 After=network-online.target
 [Service]
 Type=simple
@@ -746,27 +736,27 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
   elif command -v rc-service >/dev/null; then
-    cat > /etc/init.d/sing-box <<EOF
+    cat > /etc/init.d/${SERVICE_NAME} <<EOF
 #!/sbin/openrc-run
-description="sing-box-yg"
+description="VPS Net Manager Sing-box"
 command="$STATE_DIR/sing-box"
 command_args="run -c $CONFIG_FILE"
 command_background=true
 pidfile="/run/sing-box.pid"
 depend() { need net; }
 EOF
-    chmod 755 /etc/init.d/sing-box
-    rc-update add sing-box default >/dev/null 2>&1 || true
-    cat > /etc/init.d/sing-box-xray <<EOF
+    chmod 755 /etc/init.d/${SERVICE_NAME}
+    rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
+    cat > /etc/init.d/${XRAY_SERVICE_NAME} <<EOF
 #!/sbin/openrc-run
-description="sing-box-yg Xray"
+description="VPS Net Manager Xray-core"
 command="$STATE_DIR/xray"
 command_args="run -c $XRAY_CONFIG_FILE"
 command_background=true
 pidfile="/run/xray.pid"
 depend() { need net; }
 EOF
-    chmod 755 /etc/init.d/sing-box-xray
+    chmod 755 /etc/init.d/${XRAY_SERVICE_NAME}
   else
     return 1
   fi
@@ -789,8 +779,7 @@ stop_disable_service(){
 }
 reconcile_core_services(){ # state-json
   local state=$1
-  # Stop both managed cores first: changing the owner of a Reality port cannot
-  # succeed if the old core is still listening on that same port.
+  # Release both managed core listeners before starting the selected engines.
   stop_disable_service "$SERVICE_NAME"
   stop_disable_service "$XRAY_SERVICE_NAME"
   if command -v systemctl >/dev/null; then
@@ -798,12 +787,12 @@ reconcile_core_services(){ # state-json
     if state_uses_engine "$state" xray; then systemd_enable_restart "$XRAY_SERVICE_NAME"; fi
   else
     if state_uses_engine "$state" sing-box; then
-      rc-update add sing-box default >/dev/null 2>&1 || true
-      rc-service sing-box restart
+      rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
+      rc-service "$SERVICE_NAME" restart
     fi
     if state_uses_engine "$state" xray; then
-      rc-update add sing-box-xray default >/dev/null 2>&1 || true
-      rc-service sing-box-xray restart
+      rc-update add "$XRAY_SERVICE_NAME" default >/dev/null 2>&1 || true
+      rc-service "$XRAY_SERVICE_NAME" restart
     fi
   fi
 }
@@ -1019,8 +1008,8 @@ ufw_rule_desired(){ # state tag spec
 }
 ufw_allow_exists(){ # spec [managed-tag]
   local spec=$1 tag=${2:-}
-  ufw status 2>/dev/null | awk -v spec="$spec" -v marker="${tag:+# sing-box-yg:$tag}" '
-    $1==spec && $2=="ALLOW" && (marker=="" || index($0,marker)>0) { found=1 }
+  ufw status 2>/dev/null | awk -v spec="$spec" -v tag="$tag" -v marker="$UFW_MARKER" '
+    $1==spec && $2=="ALLOW" && (tag=="" || index($0,"# " marker ":" tag)>0) { found=1 }
     END { exit !found }
   '
 }
@@ -1029,12 +1018,12 @@ ufw_add_rule(){ # tag spec
   ufw_allow_exists "$spec" "$tag" && return 0
   # Respect an existing administrator-owned allow rule and never claim or later delete it.
   ufw_allow_exists "$spec" && return 0
-  ufw allow "$spec" comment "sing-box-yg:$tag" >/dev/null
+  ufw allow "$spec" comment "$UFW_MARKER:$tag" >/dev/null
 }
 ufw_delete_rule(){ # tag spec; only rules carrying our marker are removable
   local tag=$1 spec=$2
   ufw_allow_exists "$spec" "$tag" || return 0
-  ufw --force delete allow "$spec" comment "sing-box-yg:$tag" >/dev/null
+  ufw --force delete allow "$spec" comment "$UFW_MARKER:$tag" >/dev/null
 }
 ufw_prepare_candidate(){ # candidate transaction-file
   local candidate=$1 transaction=$2 tag spec
@@ -1076,7 +1065,8 @@ ufw_remove_all_managed(){
   local number
   ufw_active || return 0
   while :; do
-    number=$(ufw status numbered 2>/dev/null | awk '/# sing-box-yg:/{
+    number=$(ufw status numbered 2>/dev/null | awk -v marker="# $UFW_MARKER:" '
+      index($0,marker)>0 {
       line=$0
       sub(/^[^[]*\[[[:space:]]*/, "", line)
       sub(/\].*$/, "", line)
@@ -1087,23 +1077,6 @@ ufw_remove_all_managed(){
     ufw --force delete "$number" >/dev/null || break
   done
 }
-ufw_remove_managed_tag(){
-  local tag=$1 number
-  ufw_active || return 0
-  while :; do
-    number=$(ufw status numbered 2>/dev/null | awk -v marker="# sing-box-yg:${tag}" '
-      index($0,marker)>0 {
-        line=$0
-        sub(/^[^[]*\[[[:space:]]*/, "", line)
-        sub(/\].*$/, "", line)
-        gsub(/[[:space:]]/, "", line)
-        n=line
-      } END{print n}')
-    [[ "$number" =~ ^[0-9]+$ ]] || break
-    ufw --force delete "$number" >/dev/null || break
-  done
-}
-
 commit_state(){ # candidate JSON stdin
   local candidate tmp state_tmp config_tmp xray_tmp old_state old_config old_xray ufw_transaction
   candidate=$(normalize_state <<<"$(cat)") ||
@@ -1136,7 +1109,7 @@ commit_state(){ # candidate JSON stdin
     if [[ -f "$old_xray" ]]; then cp "$old_xray" "$XRAY_CONFIG_FILE"; else rm -f "$XRAY_CONFIG_FILE"; fi
     ufw_rollback_candidate "$ufw_transaction"
     if [[ -f "$old_state" ]]; then reconcile_core_services "$(cat "$old_state")" || true
-    else stop_disable_service sing-box; stop_disable_service sing-box-xray
+    else stop_disable_service "$SERVICE_NAME"; stop_disable_service "$XRAY_SERVICE_NAME"
     fi
     return 1
   fi
@@ -1147,7 +1120,7 @@ commit_state(){ # candidate JSON stdin
     if [[ -f "$old_xray" ]]; then cp "$old_xray" "$XRAY_CONFIG_FILE"; else rm -f "$XRAY_CONFIG_FILE"; fi
     ufw_rollback_candidate "$ufw_transaction"
     if [[ -f "$old_state" ]]; then reconcile_core_services "$(cat "$old_state")" || true
-    else stop_disable_service sing-box; stop_disable_service sing-box-xray
+    else stop_disable_service "$SERVICE_NAME"; stop_disable_service "$XRAY_SERVICE_NAME"
     fi
     return 1
   fi
@@ -1162,18 +1135,11 @@ apply_current_state(){
   commit_state < "$STATE_FILE"
 }
 ensure_current_state_schema(){
-  local normalized supported
   [[ -f "$STATE_FILE" ]] || return 0
-  jq -e '.schema==4 and (.protocols|has("tuic")|not)' "$STATE_FILE" >/dev/null && return 0
-  normalized=$(normalize_state < "$STATE_FILE") || return 1
-  supported=$(jq '[.protocols[]|select(.enabled)]|length' <<<"$normalized")
-  if ((supported == 0)); then
-    red '旧状态仅启用了已移除的 TUIC v5，无法自动迁移。请卸载后重新安装其他协议。'
-    return 2
-  fi
-  yellow '正在迁移旧状态：建立多证书库并移除 TUIC v5。'
-  printf '%s\n' "$normalized" | commit_state || return 1
-  ufw_remove_managed_tag tuic
+  jq -e '.schema==4 and (.protocols|has("vless") and has("vmess") and has("hy2") and has("anytls"))' "$STATE_FILE" >/dev/null || {
+    red '状态格式不受当前版本支持。请卸载后重新安装。'
+    return 1
+  }
 }
 
 address(){ local a; a=$(jq -r '.public_address' "$STATE_FILE"); [[ -n "$a" ]] && printf '%s' "$a" || { curl -4fsS --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '\n' || true; }; }
@@ -1290,8 +1256,8 @@ install_locked_script(){ # name url sha
 }
 acme(){ install_locked_script acme-yg "https://raw.githubusercontent.com/yonggekkk/acme-yg/${ACME_COMMIT}/acme.sh" "$ACME_SHA256"; }
 warp(){ install_locked_script warp-yg "https://raw.githubusercontent.com/yonggekkk/warp-yg/${WARP_COMMIT}/CFwarp.sh" "$WARP_SHA256"; }
-bbr_sysctl_file(){ printf '%s\n' "${SBYG_BBR_SYSCTL_FILE:-/etc/sysctl.d/99-sing-box-yg-bbr.conf}"; }
-bbr_module_file(){ printf '%s\n' "${SBYG_BBR_MODULE_FILE:-/etc/modules-load.d/sing-box-yg-bbr.conf}"; }
+bbr_sysctl_file(){ printf '%s\n' "${VPNM_BBR_SYSCTL_FILE:-/etc/sysctl.d/99-vps-net-manager-bbr.conf}"; }
+bbr_module_file(){ printf '%s\n' "${VPNM_BBR_MODULE_FILE:-/etc/modules-load.d/vps-net-manager-bbr.conf}"; }
 bbr_state_file(){ printf '%s/bbr-state\n' "$STATE_DIR"; }
 bbr_sysctl_value(){ sysctl -n "$1" 2>/dev/null || true; }
 bbr_available_algorithms(){ bbr_sysctl_value net.ipv4.tcp_available_congestion_control; }
@@ -1419,10 +1385,10 @@ reconcile_hy2_hop(){
   enabled=$(jq -r '.protocols.hy2.enabled' "$STATE_FILE"); hop=$(jq -r '.protocols.hy2.udp_hop' "$STATE_FILE"); port=$(jq -r '.protocols.hy2.port' "$STATE_FILE")
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
-    "$fw" -t nat -N SBYG_HY2 2>/dev/null || true
-    "$fw" -t nat -F SBYG_HY2
-    "$fw" -t nat -C PREROUTING -j SBYG_HY2 2>/dev/null || "$fw" -t nat -A PREROUTING -j SBYG_HY2
-    [[ "$enabled" == true && -n "$hop" ]] && "$fw" -t nat -A SBYG_HY2 -p udp --dport "$hop" -j REDIRECT --to-ports "$port"
+    "$fw" -t nat -N "$HY2_CHAIN" 2>/dev/null || true
+    "$fw" -t nat -F "$HY2_CHAIN"
+    "$fw" -t nat -C PREROUTING -j "$HY2_CHAIN" 2>/dev/null || "$fw" -t nat -A PREROUTING -j "$HY2_CHAIN"
+    [[ "$enabled" == true && -n "$hop" ]] && "$fw" -t nat -A "$HY2_CHAIN" -p udp --dport "$hop" -j REDIRECT --to-ports "$port"
   done
 }
 
@@ -1431,17 +1397,17 @@ reconcile_argo(){
   local enabled token port
   enabled=$(jq -r '.protocols.vmess.enabled and (.protocols.vmess.argo_token|length>0) and (.protocols.vmess.argo_domain|length>0) and (.protocols.vmess.tls==false)' "$STATE_FILE")
   if [[ "$enabled" != true ]]; then
-    systemctl disable --now sing-box-argo.service >/dev/null 2>&1 || true
+    systemctl disable --now "$ARGO_SERVICE_NAME.service" >/dev/null 2>&1 || true
     return 0
   fi
   [[ -x "$STATE_DIR/cloudflared" ]] || install_cloudflared
   token=$(jq -r '.protocols.vmess.argo_token' "$STATE_FILE"); port=$(jq -r '.protocols.vmess.port' "$STATE_FILE")
   umask 077
   printf 'TUNNEL_TOKEN=%s\n' "$token" > "$STATE_DIR/argo.env"
-  cat > /etc/systemd/system/sing-box-argo.service <<EOF
+  cat > "/etc/systemd/system/${ARGO_SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=sing-box-yg Cloudflare Tunnel
-After=network-online.target sing-box.service
+Description=VPS Net Manager Cloudflare Tunnel
+After=network-online.target ${SERVICE_NAME}.service
 [Service]
 Type=simple
 EnvironmentFile=$STATE_DIR/argo.env
@@ -1451,7 +1417,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemd_enable_restart sing-box-argo.service
+  systemd_enable_restart "$ARGO_SERVICE_NAME.service"
 }
 
 set_address(){
@@ -1703,7 +1669,7 @@ probe_reality_once(){ # host [sample-number] -> DNS + TCP + TLS handshake millis
 }
 probe_reality_metadata(){ # host -> grade 2=recommended,1=available,0=rejected; reason, TLS, ALPN, key exchange, certificate
   local host=$1 output tls alpn curve cert reason= grade=0
-  output=$(mktemp "${TMPDIR:-/tmp}/sing-box-yg-reality.XXXXXX")
+  output=$(mktemp "${TMPDIR:-/tmp}/vps-net-manager-reality.XXXXXX")
   # Try TLS 1.3 first for the recommended profile, then a verified generic TLS
   # handshake so older but otherwise usable targets are not incorrectly hidden.
   timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 \
@@ -2100,12 +2066,12 @@ sync_managed_certificates(){ # [quiet]
 }
 reconcile_certificate_sync_schedule(){ # state, only mutates the real VPS installation
   local state=$1 unit timer periodic
-  [[ "$STATE_DIR" == /etc/s-box ]] || return 0
-  unit=/etc/systemd/system/sing-box-cert-sync.service
-  timer=/etc/systemd/system/sing-box-cert-sync.timer
-  periodic=/etc/periodic/6h/sing-box-yg-cert-sync
+  [[ "$STATE_DIR" == /etc/vps-net-manager ]] || return 0
+  unit="/etc/systemd/system/${CERT_SYNC_SERVICE_NAME}.service"
+  timer="/etc/systemd/system/${CERT_SYNC_SERVICE_NAME}.timer"
+  periodic=/etc/periodic/6h/vps-net-manager-cert-sync
   if ! certificate_sync_has_sources "$state"; then
-    systemctl disable --now sing-box-cert-sync.timer 2>/dev/null || true
+    command -v systemctl >/dev/null 2>&1 && systemctl disable --now "${CERT_SYNC_SERVICE_NAME}.timer" 2>/dev/null || true
     rm -f "$unit" "$timer" "$periodic"
     systemctl daemon-reload 2>/dev/null || true
     return 0
@@ -2113,15 +2079,15 @@ reconcile_certificate_sync_schedule(){ # state, only mutates the real VPS instal
   if command -v systemctl >/dev/null 2>&1; then
     cat > "$unit" <<'EOF'
 [Unit]
-Description=sing-box-yg managed certificate synchronization
+Description=VPS Net Manager managed certificate synchronization
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/sb cert-sync --quiet
+ExecStart=/usr/local/bin/vpnm cert-sync --quiet
 EOF
     cat > "$timer" <<'EOF'
 [Unit]
-Description=Run sing-box-yg certificate synchronization
+Description=Run VPS Net Manager certificate synchronization
 
 [Timer]
 OnBootSec=10m
@@ -2132,11 +2098,11 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    systemctl daemon-reload && systemctl enable --now sing-box-cert-sync.timer
+    systemctl daemon-reload && systemctl enable --now "${CERT_SYNC_SERVICE_NAME}.timer"
   elif [[ -d /etc/periodic/6h ]]; then
     install -m 700 /dev/stdin "$periodic" <<'EOF'
 #!/bin/sh
-/usr/local/bin/sb cert-sync --quiet
+/usr/local/bin/vpnm cert-sync --quiet
 EOF
   else
     yellow '未检测到 systemd 或 OpenRC periodic；请在证书管理中手动同步。'
@@ -2617,7 +2583,7 @@ install_flow(){
   fi
   printf '%s\n' "$core" > "$STATE_DIR/core-version"
   update_script no-reload
-  green '安装完成。可通过 sb → 配置菜单随时增删协议。'
+  green '安装完成。可通过 vpnm → 配置菜单随时增删协议。'
   offer_tls_certificate_setup
 }
 
@@ -2634,14 +2600,14 @@ update_script(){
   expected=$(curl -fsSL --proto '=https' --tlsv1.2 "$FORK_RAW/sb.sh.sha256" | awk '{print $1}')
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die 'fork 快捷脚本校验文件无效，拒绝更新。'
   download_verified "$FORK_RAW/sb.sh" "$expected" "$WORKDIR/sb.sh" 'fork 快捷脚本'
-  install -m 755 "$WORKDIR/sb.sh" /usr/local/bin/sb
+  install -m 755 "$WORKDIR/sb.sh" /usr/local/bin/vpnm
   persist_channel
   green "脚本更新完成，渠道已保存为 ${FORK_BRANCH}。"
   if [[ "$reload" == reload ]]; then
     green '正在切换到新脚本进程...'
     trap - EXIT
     cleanup_tmp
-    exec /usr/local/bin/sb
+    exec /usr/local/bin/vpnm
   fi
 }
 update_menu(){
@@ -2650,23 +2616,18 @@ update_menu(){
     menu_header '更新管理' '主菜单 / 更新管理'
     printf '  当前渠道：%s\n\n' "$FORK_BRANCH"
     menu_item 1 "从当前渠道更新（${FORK_BRANCH}）"
-    menu_item 2 '切换到稳定版 v0.0.4 并更新'
-    menu_item 3 '切换到开发版 main 并更新'
-    menu_item 4 '输入其他分支或标签'
+    menu_item 2 '切换到 main 并更新'
+    menu_item 3 '输入标签或其他分支'
     menu_back '返回主菜单'
-    ask '请选择 [0-4]：' choice
+    ask '请选择 [0-3]：' choice
     previous=$FORK_BRANCH
     case "$choice" in
       1) update_script && return 0 || true;;
       2)
-        set_channel v0.0.4
-        update_script && return 0 || set_channel "$previous"
-        ;;
-      3)
         set_channel main
         update_script && return 0 || set_channel "$previous"
         ;;
-      4)
+      3)
         ask '分支或标签（回车/0 返回上一级）：' custom
         cancel_input "$custom" && continue
         if set_channel "$custom"; then
@@ -2718,42 +2679,47 @@ systemd_stop_disable(){
 }
 stop_systemd_services(){
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemd_stop_disable sing-box.service || true
-  systemd_stop_disable sing-box-xray.service || true
-  systemd_stop_disable sing-box-argo.service || true
+  systemd_stop_disable "$SERVICE_NAME.service" || true
+  systemd_stop_disable "$XRAY_SERVICE_NAME.service" || true
+  systemd_stop_disable "$ARGO_SERVICE_NAME.service" || true
+  systemd_stop_disable "$CERT_SYNC_SERVICE_NAME.timer" || true
   systemd_stop_disable "$(realm_service_name)" || true
 }
 uninstall(){
   local x fw
-  read -r -p '确认卸载 VPS Sing-box（输入 YES；回车/0 返回上一级）：' x
+  read -r -p '确认卸载 VPS Net Manager（输入 YES；回车/0 返回上一级）：' x
   [[ $x == YES ]] || return 1
-  [[ "$STATE_DIR" == /etc/s-box ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
+  [[ "$STATE_DIR" == /etc/vps-net-manager ]] || { red "拒绝删除非标准状态目录：$STATE_DIR"; return 1; }
   stop_systemd_services
-  rc-service sing-box stop 2>/dev/null || true
-  rc-service sing-box-xray stop 2>/dev/null || true
-  rc-update del sing-box default 2>/dev/null || true
-  rc-update del sing-box-xray default 2>/dev/null || true
+  for service in "$SERVICE_NAME" "$XRAY_SERVICE_NAME"; do
+    rc-service "$service" stop 2>/dev/null || true
+    rc-update del "$service" default 2>/dev/null || true
+  done
   ufw_remove_all_managed
   if [[ -f "$(realm_state_file)" ]]; then
     realm_ufw_finalize "$(cat "$(realm_state_file)")" '{"rules":[]}' || true
   fi
   for fw in iptables ip6tables; do
     command -v "$fw" >/dev/null 2>&1 || continue
-    while "$fw" -t nat -C PREROUTING -j SBYG_HY2 2>/dev/null; do "$fw" -t nat -D PREROUTING -j SBYG_HY2 || break; done
-    "$fw" -t nat -F SBYG_HY2 2>/dev/null || true
-    "$fw" -t nat -X SBYG_HY2 2>/dev/null || true
+    for chain in "$HY2_CHAIN"; do
+      while "$fw" -t nat -C PREROUTING -j "$chain" 2>/dev/null; do "$fw" -t nat -D PREROUTING -j "$chain" || break; done
+      "$fw" -t nat -F "$chain" 2>/dev/null || true
+      "$fw" -t nat -X "$chain" 2>/dev/null || true
+    done
   done
   rm -f "$(bbr_sysctl_file)" "$(bbr_module_file)"
-  rm -rf "$STATE_DIR" /etc/systemd/system/sing-box.service /etc/systemd/system/sing-box-xray.service /etc/systemd/system/sing-box-argo.service /etc/systemd/system/sing-box-cert-sync.service /etc/systemd/system/sing-box-cert-sync.timer "/etc/systemd/system/$(realm_service_name)" /etc/init.d/sing-box /etc/init.d/sing-box-xray
-  rm -f /etc/periodic/6h/sing-box-yg-cert-sync
-  rm -f /usr/local/bin/sb
+  rm -rf "$STATE_DIR" \
+    "/etc/systemd/system/${SERVICE_NAME}.service" "/etc/systemd/system/${XRAY_SERVICE_NAME}.service" "/etc/systemd/system/${ARGO_SERVICE_NAME}.service" \
+    "/etc/systemd/system/${CERT_SYNC_SERVICE_NAME}.service" "/etc/systemd/system/${CERT_SYNC_SERVICE_NAME}.timer" \
+    "/etc/systemd/system/$(realm_service_name)" "/etc/init.d/${SERVICE_NAME}" "/etc/init.d/${XRAY_SERVICE_NAME}"
+  rm -f /etc/periodic/6h/vps-net-manager-cert-sync
+  rm -f /usr/local/bin/vpnm
   systemctl daemon-reload 2>/dev/null || true
-  green '卸载完成：服务、状态文件、Realm、脚本创建的防火墙规则和 sb 快捷命令已删除。'
+  green '卸载完成：服务、状态文件、Realm、脚本创建的防火墙规则和 vpnm 快捷命令已删除。'
   return 0
 }
 
 main(){
-  local migration_rc migration_choice
   need_root
   if [[ "${1:-}" == cert-sync ]]; then
     [[ -f "$STATE_FILE" ]] || exit 0
@@ -2762,20 +2728,7 @@ main(){
     exit $?
   fi
   if [[ -f "$CONFIG_FILE" && ! -f "$STATE_FILE" ]]; then die '检测到旧版安装，缺少新版状态文件。为避免错误修改，请先卸载后重装。'; fi
-  if ensure_current_state_schema; then
-    :
-  else
-    migration_rc=$?
-    if [[ "$migration_rc" == 2 ]]; then
-      menu_header '旧版 TUIC 状态处理' '启动检查'
-      menu_item 1 '卸载旧 TUIC 安装'
-      menu_back '返回终端'
-      ask '请选择 [0-1]：' migration_choice
-      [[ "$migration_choice" == 1 ]] && { uninstall && exit 0; }
-      exit 0
-    fi
-    die '状态迁移失败，原运行配置已保留。'
-  fi
+  ensure_current_state_schema || die '状态检查失败。'
   check_version
   while :; do
     main_dashboard
@@ -2801,7 +2754,7 @@ main(){
       5) update_menu;;
       6) require_install && {
         command -v journalctl >/dev/null &&
-          journalctl -u sing-box -u sing-box-xray -n 100 --no-pager ||
+          journalctl -u "$SERVICE_NAME" -u "$XRAY_SERVICE_NAME" -n 100 --no-pager ||
           tail -n 100 /var/log/messages
       };;
       7) if [[ -f "$STATE_FILE" ]]; then domain_certificate_target_menu; else acme; fi;;
@@ -2815,4 +2768,4 @@ main(){
     esac
   done
 }
-[[ "${SBYG_LIB_ONLY:-0}" == 1 ]] || main "$@"
+[[ "${VPNM_LIB_ONLY:-0}" == 1 ]] || main "$@"

@@ -10,33 +10,33 @@ XRAY_CORE=${SB_TEST_XRAY_CORE:-}
   exit 77
 }
 
-TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sbyg-tests.XXXXXX")
-export SBYG_LIB_ONLY=1
-export SBYG_STATE_DIR="$TEST_ROOT/initial"
+TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vpnm-tests.XXXXXX")
+export VPNM_LIB_ONLY=1
+export VPNM_STATE_DIR="$TEST_ROOT/initial"
 source "$ROOT/sb.sh"
 trap 'cleanup_tmp; rm -rf "$TEST_ROOT"' EXIT
 
 # Existing systemd services must always restart after a validated config replacement.
 systemctl_calls=
 systemctl(){ systemctl_calls+="${*}"$'\n'; }
-systemd_enable_restart sing-box.service
-[[ "$systemctl_calls" == $'enable sing-box.service\nrestart sing-box.service\n' ]]
+systemd_enable_restart vps-net-manager.service
+[[ "$systemctl_calls" == $'enable vps-net-manager.service\nrestart vps-net-manager.service\n' ]]
 unset -f systemctl
 
 # Core reconciliation releases old listeners before starting the selected core.
 systemctl_calls=
 systemctl(){ systemctl_calls+="${*}"$'\n'; }
 reconcile_core_services '{"protocols":{"vless":{"enabled":true,"engine":"xray"},"vmess":{"enabled":false,"engine":"sing-box"}}}'
-[[ "$systemctl_calls" == $'disable --now sing-box\ndisable --now sing-box-xray\nenable sing-box-xray\nrestart sing-box-xray\n' ]]
+[[ "$systemctl_calls" == $'disable --now vps-net-manager\ndisable --now vps-net-manager-xray\nenable vps-net-manager-xray\nrestart vps-net-manager-xray\n' ]]
 unset -f systemctl
 
 # Missing/failing optional Argo state must not prevent stopping the main service or vice versa.
 saved_systemd_stop_disable=$(declare -f systemd_stop_disable)
 stopped_units=
 systemctl(){ :; }
-systemd_stop_disable(){ stopped_units+="${1}"$'\n'; [[ "$1" != sing-box.service ]]; }
+systemd_stop_disable(){ stopped_units+="${1}"$'\n'; [[ "$1" != vps-net-manager.service ]]; }
 stop_systemd_services
-[[ "$stopped_units" == $'sing-box.service\nsing-box-xray.service\nsing-box-argo.service\n' ]]
+[[ "$stopped_units" == $'vps-net-manager.service\nvps-net-manager-xray.service\nvps-net-manager-argo.service\nvps-net-manager-cert-sync.timer\nvps-net-manager-realm.service\n' ]]
 eval "$saved_systemd_stop_disable"
 unset -f systemctl
 
@@ -51,8 +51,8 @@ set_case_dir(){
 # Native BBR management only owns its own sysctl/module files, verifies the
 # resulting runtime values, and returns to the captured pre-change values.
 set_case_dir bbr
-export SBYG_BBR_SYSCTL_FILE="$TEST_ROOT/bbr/99-sing-box-yg-bbr.conf"
-export SBYG_BBR_MODULE_FILE="$TEST_ROOT/bbr/sing-box-yg-bbr.conf"
+export VPNM_BBR_SYSCTL_FILE="$TEST_ROOT/bbr/99-vps-net-manager-bbr.conf"
+export VPNM_BBR_MODULE_FILE="$TEST_ROOT/bbr/vps-net-manager-bbr.conf"
 bbr_cc=cubic
 bbr_qdisc=fq_codel
 sysctl(){
@@ -78,23 +78,23 @@ sysctl(){
 saved_confirm_change=$(declare -f confirm_change)
 confirm_change(){ return 0; }
 bbr_enable_native
-[[ -f "$SBYG_BBR_SYSCTL_FILE" && -f "$SBYG_BBR_MODULE_FILE" && -f "$(bbr_state_file)" ]]
+[[ -f "$VPNM_BBR_SYSCTL_FILE" && -f "$VPNM_BBR_MODULE_FILE" && -f "$(bbr_state_file)" ]]
 [[ "$bbr_cc" == bbr && "$bbr_qdisc" == fq ]]
 bbr_revert_native
-[[ ! -e "$SBYG_BBR_SYSCTL_FILE" && ! -e "$SBYG_BBR_MODULE_FILE" && ! -e "$(bbr_state_file)" ]]
+[[ ! -e "$VPNM_BBR_SYSCTL_FILE" && ! -e "$VPNM_BBR_MODULE_FILE" && ! -e "$(bbr_state_file)" ]]
 [[ "$bbr_cc" == cubic && "$bbr_qdisc" == fq_codel ]]
 eval "$saved_confirm_change"
 unset -f sysctl
-unset SBYG_BBR_SYSCTL_FILE SBYG_BBR_MODULE_FILE
+unset VPNM_BBR_SYSCTL_FILE VPNM_BBR_MODULE_FILE
 
-# Update channels persist across later `sb` runs, while an explicit environment
+# Update channels persist across later `vpnm` runs, while an explicit environment
 # selection wins for the current run and is validated before use.
 set_case_dir channel
 printf 'v0.0.1\n' > "$STATE_DIR/channel"
-unset SBYG_CHANNEL
+unset VPNM_CHANNEL
 load_channel
 [[ "$FORK_BRANCH" == v0.0.1 && "$FORK_RAW" == */v0.0.1 ]]
-export SBYG_CHANNEL=feature/ux-test
+export VPNM_CHANNEL=feature/ux-test
 load_channel
 [[ "$FORK_BRANCH" == feature/ux-test && "$FORK_RAW" == */feature/ux-test ]]
 persist_channel
@@ -102,15 +102,15 @@ persist_channel
 ! valid_channel 'bad..ref'
 ! valid_channel '/absolute'
 ! valid_channel 'double//slash'
-unset SBYG_CHANNEL
+unset VPNM_CHANNEL
 set_channel main
 saved_update_script=$(declare -f update_script)
 selected_update_channel=
 update_script(){ selected_update_channel=$FORK_BRANCH; }
 update_menu <<<"2"
-[[ "$selected_update_channel" == v0.0.4 ]]
+[[ "$selected_update_channel" == main ]]
 set_channel main
-update_menu <<< $'4\nfeature/next'
+update_menu <<< $'3\nfeature/next'
 [[ "$selected_update_channel" == feature/next ]]
 update_script(){ return 2; }
 set_channel main
@@ -252,33 +252,6 @@ validate_state "$custom_padding"
 bad_padding=$(jq '.protocols.anytls.padding={mode:"custom",lines:["stop=2","0=10-20","0=1-1"]}' <<<"$four_state")
 ! validate_state "$bad_padding"
 
-# Schema 1 states migrate the global certificate into the library and remove TUIC completely.
-schema1_state=$(jq '
-  .schema=1 | .certificate=.certificates.default | del(.certificates) |
-  .protocols.tuic={enabled:true,name:"tuic-v5",port:29999,uuid:.protocols.vless.uuid,password:"legacy",domain:"www.bing.com"}
-' <<<"$four_state")
-migrated_state=$(normalize_state <<<"$schema1_state")
-jq -e '
-  .schema==4 and (.protocols|has("tuic")|not) and
-  .protocols.vless.engine=="sing-box" and .xray_core=="26.3.27" and
-  .protocols.vmess.certificate_id=="default" and
-  .protocols.hy2.certificate_id=="default" and
-  .protocols.anytls.certificate_id=="default" and
-  .certificates.default.cert != null
-' <<<"$migrated_state" >/dev/null
-validate_state "$migrated_state"
-set_case_dir migration-tuic-only
-schema1_tuic_only=$(jq '
-  .protocols |= with_entries(.value.enabled=false) |
-  .protocols.tuic.enabled=true
-' <<<"$schema1_state")
-printf '%s\n' "$schema1_tuic_only" > "$STATE_FILE"
-if ensure_current_state_schema; then
-  echo 'TUIC-only migration unexpectedly succeeded' >&2
-  exit 1
-else
-  [[ $? -eq 2 ]]
-fi
 ss(){ printf 'udp UNCONN 0 0 [::]:28000 [::]:*\n'; }
 ! port_available 28000
 port_available 28001
@@ -353,8 +326,8 @@ mock_ufw_numbered_count=2
 mock_ufw_number_deletes=
 ufw(){
   if [[ "$1" == status && "${2:-}" == numbered ]]; then
-    if ((mock_ufw_numbered_count >= 1)); then printf '[ 1] 25001/tcp ALLOW IN Anywhere # sing-box-yg:vless\n'; fi
-    if ((mock_ufw_numbered_count >= 2)); then printf '[12] 25005/tcp ALLOW IN Anywhere # sing-box-yg:anytls\n'; fi
+    if ((mock_ufw_numbered_count >= 1)); then printf '[ 1] 25001/tcp ALLOW IN Anywhere # vps-net-manager:vless\n'; fi
+    if ((mock_ufw_numbered_count >= 2)); then printf '[12] 25005/tcp ALLOW IN Anywhere # vps-net-manager:anytls\n'; fi
   elif [[ "$1" == --force && "$2" == delete ]]; then
     mock_ufw_number_deletes+="${3}"$'\n'
     mock_ufw_numbered_count=$((mock_ufw_numbered_count - 1))

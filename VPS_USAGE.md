@@ -1,78 +1,76 @@
-# VPS 安装与使用
+# VPS Net Manager 使用说明
 
-本说明只适用于 Debian、Ubuntu、RHEL 系或 Alpine VPS；本仓库不再包含 Serv00 或保活网页相关代码。
+## 1. 适用系统与准备
 
-## 准备与安装
+Sing-box 模块支持 Debian、Ubuntu、RHEL 系与 Alpine；Realm 模块仅支持 Debian 或 Ubuntu，并要求 systemd。请以 `root` 运行。云厂商安全组仍需放行实际使用的端口。
 
-使用受支持的 Debian、Ubuntu、RHEL 系或 Alpine 系统，并以 `root` 运行。VPS 控制台防火墙/安全组应放行实际启用协议的 TCP/UDP 端口；Reality、Vmess、AnyTLS 使用 TCP，Hysteria2 使用 UDP。服务一直监听 `::`；分享链接的对外地址是独立设置。
+服务监听 `::`；“对外地址”仅决定分享链接中的服务器地址，可填写 IPv4、IPv6 或解析到本机的域名，不要带协议头、方括号或端口。
 
-推荐安装稳定版 `v0.0.4`：
+## 2. 安装与更新渠道
 
-```bash
-SBYG_CHANNEL=v0.0.4 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.4/sb.sh)
-```
-
-`main` 用于继续开发和测试最新改动：
+当前版本：
 
 ```bash
-SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
+VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/sb.sh)
 ```
 
-`SBYG_CHANNEL` 会让安装过程中需要的校验文件和 fork 内辅助文件继续从同一个标签或分支下载。脚本会把成功安装或更新的渠道保存到 `/etc/s-box/channel`，以后直接运行 `sb` 仍使用该渠道；旧安装没有渠道文件时自动采用 `main`。主菜单顶部会显示当前渠道，选项 `5 更新管理` 会在下载前显示目标渠道和地址；当前 `main` 可切换到稳定版 `v0.0.4`、开发版 `main` 或其他分支/标签。历史标签都是不会移动的快照。
+安装后运行 `vpnm`。成功安装或更新的渠道保存在状态目录，后续更新会继续使用同一渠道。主菜单 `5` 可切换当前分支、输入标签或输入其他分支。若要固定到发布版，请将安装命令里的 `main` 与 `VPNM_CHANNEL` 同时替换为该标签。
 
-安装时输入协议编号的逗号分隔列表。例如 `1,3,4` 为 Vless-Reality、Hysteria2、AnyTLS；至少要一个协议。选择 Vless-Reality 后，开发版 `main` 会继续询问使用 Sing-box 还是 Xray-core 服务端。内核和协议选择均可输入 `0` 返回；协议选择取消时不会写入协议状态或启动服务。选择 Sing-box `1.10.7` 时不显示 AnyTLS，输入 `4` 会被拒绝。VPS fork 已移除 TUIC v5。
+## 3. 协议与节点
 
-## 菜单、节点与订阅
+安装时可用逗号多选协议：`1,3,4` 代表 Vless-Reality、Hysteria2、AnyTLS；至少选择一个。Sing-box 1.10.7 不支持 AnyTLS。Vless-Reality 可选择 Sing-box 或 Xray-core 服务端，其他协议均由 Sing-box 处理。
 
-运行 `sb` 进入主菜单。顶部状态区显示脚本版本、更新渠道、Sing-box/Xray 服务状态、内核和已启用协议数；每项菜单独占一行并显示当前位置。`2` 是配置菜单：查看启用协议和完整链接、显示二维码、重新生成订阅，或进入协议管理。协议列表会直接显示每个协议的启用状态、服务端内核、TCP/UDP、监听端口以及 Reality SNI 或证书模式。生成文件在 `/etc/s-box/`：`subscription.txt`（聚合节点）、`subscription.base64`（聚合订阅）、`mihomo-subscription.txt` 和 `sing-box-client.json`。它们都只包含已启用协议，并在每次修改后同步更新。主菜单 `3` 和配置菜单 `7` 都会从最新 `protocols.json` 重新渲染 `/etc/s-box/sb.json` 与 `/etc/s-box/xray.json`，分别通过 `sing-box check` 和 `xray run -test` 后原子替换，再启动需要的服务并停用不再需要的服务，避免进程继续使用旧端口或旧凭据。
+主菜单 `2` 进入配置：
 
-## 修改配置
+- 查看当前节点、分享链接、二维码和订阅。
+- 启用或停用协议，始终至少保留一个协议。
+- 修改节点名称、端口、UUID/密码、对外地址和协议专属参数。
+- 修改后自动重新生成 `subscription.txt`、`subscription.base64`、`mihomo-subscription.txt` 与 `sing-box-client.json`；它们只包含已启用协议。
 
-“管理协议”可启用/停用协议、改节点名、端口和 UUID/密码。操作入口会根据当前状态明确显示“启用协议”或“停用协议”，确认页会预览端口以及配置、订阅和防火墙影响。不能停用最后一个协议；新增协议自动分配端口，端口修改检查格式、重复及系统监听冲突。
+每项配置先写入临时文件，再执行 JSON、`sing-box check` 和 Xray 检查（如启用）。失败时会保留原配置、原端口和原服务。
 
-如果系统安装了 UFW 且 `ufw status` 为 `active`，脚本会同步管理带 `sing-box-yg:<tag>` 注释的放行规则。安装、启用协议或更换端口时先放行新 TCP/UDP 端口，配置通过检查并重启成功后才删除脚本拥有的旧规则；失败会撤销本次新增规则并保留旧端口。Hy2 UDP 跳跃范围也会同步。脚本不会安装或自动启用 UFW，不会接管管理员已有的同端口规则；UFW 不存在或未启用时不修改系统防火墙，云厂商安全组仍需手动放行。
+## 4. Reality
 
-所有配置子菜单都显示 `0 返回上一级`，并且只返回紧邻的上一层（例如 SNI 候选返回 Vless 专项参数，再返回 Vless 操作菜单）。进入某项后如果不想修改，输入 `0` 或直接回车即可取消；取消不会写状态文件、生成配置或重启服务。启停协议、轮换 Reality 密钥和手动重新生成订阅还会再次要求确认。
+Reality SNI 候选来自 `assets/reality-targets.txt`，安装时复制到状态目录。扫描展示全部候选并分为三类：
 
-常见操作示例：
+- **推荐**：受信证书/SNI、TLS 1.3、h2、X25519 系列密钥交换以及至少 2/3 次握手均通过。
+- **可用**：基础 TLS 与证书校验通过，但缺少推荐条件；选择前会二次确认。
+- **不可**：不能选择，并显示失败原因。
 
-1. `sb → 2 → 2`，选择协议后用“启用/停用”在安装后增删协议。
-2. 在同一协议菜单用“名称”“端口”“凭据”修改节点名、监听端口和 UUID/密码。
-3. Vless 专项参数可更换 Reality SNI，或一次性轮换匹配的私钥、公钥和 Short ID。“扫描目标”不再把候选域名写死在脚本中：安装时会校验并部署仓库的 [`assets/reality-targets.txt`](assets/reality-targets.txt) 到 VPS 的 `/etc/s-box/reality-targets.txt`，扫描时逐行读取。Reality SNI 菜单会清楚标示候选清单是“当前渠道默认清单”还是“本机自定义或旧清单”，避免把旧的本机文件误当作已更新的默认项。你可先通过 `sb → 2 → 管理协议 → Vless → Reality SNI → 3` 查看路径，再以“一行一个域名”（可用 `#` 添加注释）的形式维护本机清单；空行和重复项会自动忽略，无效域名会被拒绝，原配置不会改变。每次扫描会以“表头在上、每个域名一行”的固定宽度表格展示清单的全部结果；域名、密钥交换和证书名过长时会截断为 `...`。结果分三级：**推荐**同时通过受信证书/SNI、TLS 1.3、HTTP/2（h2）、X25519 系列密钥交换和至少 2/3 次 TLS 握手；**可用**表示基础 TLS 与证书校验通过但缺少推荐条件，选择时会二次确认；**不可**不能选择并显示原因。延迟按 `DNS + TCP + TLS 握手完成` 计时，不再包含 OpenSSL 进程退出和连接关闭时间；结果按等级、成功次数、平均握手延迟及抖动排序。也可以单独扫描自定义域名。菜单选项 `4` 可从当前渠道重新下载并校验仓库清单，但会覆盖本机手工编辑的文件。
+扫描延迟是从当前 VPS 发起的 DNS、TCP 与 TLS 握手耗时，不是本地客户端到 VPS 的延迟。可在 Reality SNI 菜单查看、维护或重新下载候选清单。
 
-Go 迁移采用兼容式渐进方案：`sb` 仍是既有的安装和菜单入口，因此不会让当前 VPS 因语言迁移而失效；仓库新增 `cmd/sbyg` 和 `internal/reality`，将候选清单解析、TLS 探测、并发扫描和排序拆为可单测的 Go 模块，并由 CI 构建 Linux `amd64`/`arm64` 二进制。后续会按相同边界迁移状态读写、配置渲染和事务应用；在 Go 发布包加入锁定清单前，生产脚本仍使用已验证的 Shell 扫描器，避免为了迁移而引入未经校验的动态二进制下载。
-4. 开发版 `main` 的 Vless 专项参数还可在 Sing-box 与 Xray-core 之间切换。Xray 发布包及其官方 `.dgst` 摘要会分别校验；服务使用独立的 `sing-box-xray` 单元，不会覆盖系统已有的通用 `xray.service`。切换保留端口、UUID、Reality 密钥和分享链接，事务失败会恢复原内核服务。Xray 参数向导提供指纹、SpiderX、最大时间差、ML-DSA-65 和非认证回落限速选项：长密钥由 Xray 自动生成，SpiderX 可自动生成，枚举参数只需选择。启用 ML-DSA-65 前，脚本会运行 `xray tls ping`，仅在目标证书链大于 3500 bytes 且支持 X25519MLKEM768 时继续；它不影响未启用验证的旧客户端，分享链接会增加 `pqv`，支持该字段的 Xray/v2rayN 客户端会验证额外签名。
-5. Vmess 专项参数可改 WS Path、TLS、CDN 地址、证书域名；Argo 固定隧道需填域名和 Cloudflare Tunnel token，启用时会自动关闭服务端 Vmess TLS，并使用经过校验的固定 Cloudflared 版本。
-6. Hy2 专项参数可改上/下行 Mbps 和 UDP 跳跃范围，例如 `20000:30000`；关闭跳跃使用单独的“关闭”选项，回车仅取消修改。脚本使用独立 `SBYG_HY2` 防火墙链转发到主端口。
-7. `sb → 2 → 6` 是多证书管理。证书库可以保存多组证书和私钥，Vmess、Hy2、AnyTLS 各自记录独立的证书绑定。选项 `4` 是域名证书向导：选择协议或全部协议，再填写证书域名。脚本先检查证书库以及 `/root/ygkkkca/cert.crt`、`/root/ygkkkca/private.key`；没有证书时可运行锁定版 ACME 或手动指定已有证书。验证成功后会复制到 `/etc/s-box/certificates/<证书ID>/`，加入证书库并自动绑定。导入时可以选择跟踪原始 cert/key 文件；脚本保留运行时托管副本，避免续期工具直接改动正在使用的路径。选项 `5` 可随时为某个协议改选证书；如果新证书不覆盖当前 SNI，脚本会要求同时填写该证书覆盖的新域名。
+Xray Reality 额外提供客户端指纹、SpiderX、最大时间差、ML-DSA-65 与非认证流量限制。ML-DSA-65 的长密钥由 Xray 自动生成，不需要手动输入。
 
-配置菜单“对外地址”可填 IPv4（`203.0.113.10`）、IPv6（`2001:db8::10`）或解析到本 VPS 的域名（`node.example.com`）；不要带协议头、方括号或端口。“自动探测”是单独选项，回车仅取消修改。它仅影响分享链接，服务仍监听 `::`。
+## 5. 证书与普通 TLS 协议
 
-AnyTLS 和 Hysteria2 使用普通 TLS：SNI 应与该协议绑定证书的实际域名相符，没有 Reality 那种借用第三方站点作为握手目标的“大厂优选域名”概念。因此脚本只给 Reality 提供上述候选，不会把这些域名套到 AnyTLS。
+Vmess-WS、Hysteria2 与 AnyTLS 使用普通 TLS，每个协议可独立选择证书。通过 `vpnm → 2 → 6` 进入证书管理：
 
-### AnyTLS 域名与证书
+- 导入自签证书固定 SHA256，或导入公开受信证书并使用系统 CA 验证。
+- 域名证书向导会验证证书有效期、公私钥匹配和 SAN 域名覆盖，再原子绑定给一个或全部 TLS 协议。
+- 导入时可选择跟踪 cert/key 源文件。systemd 主机每 6 小时检查一次；也可手动同步或关闭自动同步。
 
-推荐为 AnyTLS 准备独立域名，例如 `anytls.example.com`。域名托管在 Cloudflare 时，A/AAAA 记录必须保持“仅 DNS（灰云）”；普通小黄云代理的是 HTTP/HTTPS，不能透传 AnyTLS 的原始 TCP。可以使用 Cloudflare DNS 验证签发 ACME 证书，DNS 托管和小黄云代理是两回事。
+证书同步不会申请证书或联网执行 ACME。它只读取已配置的本地源文件，验证新证书、渲染并检查配置后再原子替换；失败会恢复旧证书、订阅和服务。
 
-AnyTLS 默认写入官方推荐的 `padding_scheme`，并把该默认值显式固定在状态文件中。需要与既有客户端实验性参数对齐时，可从 `sb → 2 → 管理协议 → AnyTLS → Padding` 逐行录入自定义规则；脚本会校验 `stop=N`、包序号、区间和重复项，非法方案不会写入配置。除非明确知道对端兼容性，不建议改动默认方案。
+AnyTLS 应使用自己的域名和匹配证书。Cloudflare DNS 记录应为“仅 DNS（灰云）”，因为普通小黄云不能代理 AnyTLS 原始 TCP。AnyTLS 默认使用固定的官方 Padding 方案；只有明确知道客户端兼容性时才在协议菜单中改成自定义方案。
 
-证书管理提供两种客户端校验模式：
+## 6. Realm 端口转发
 
-1. **系统 CA 验证（推荐）**：适合 Let's Encrypt 等公开受信的 ACME 证书。分享链接不生成 `insecure=1` 或固定值，Sing-box 和 Mihomo 客户端均执行正常证书链与域名验证。ACME 续期不要求客户端重新导入订阅。
-2. **自签证书固定 SHA256**：适合没有可用受信证书的情况。脚本为 Xray/v2rayN 的 AnyTLS 链接生成证书 DER SHA256 参数 `pcs`，并为 Sing-box 1.13+ 客户端生成 Base64 格式的 `certificate_public_key_sha256`；二者格式不同，不能混用。Mihomo 目前仍使用其 `skip-cert-verify` 兼容项，因此跨客户端场景仍优先选择受信证书。固定证书一旦更换，必须重新生成并在所有客户端重新导入订阅。
+主菜单 `12` 提供 Realm，仅 Debian/Ubuntu + systemd 可用。
 
-新安装的备用自签证书包含匹配的 SAN、`CA:FALSE`、服务端 KeyUsage，并默认进入固定模式，不再给 AnyTLS 分享链接输出仅有 `insecure=1` 的配置。已有状态文件若缺少 `certificate.mode`，下次应用时会根据原来的 `insecure` 值迁移：`true` 迁移为 `pinned`，`false` 迁移为 `trusted`。固定值无法计算时脚本拒绝生成不安全的客户端配置并回滚本次状态修改。
+1. 选择 `1` 安装或更新 Realm。官方 `v2.9.4` 二进制和 SHA-256 已锁定。
+2. 选择 `2` 添加规则，依次输入监听地址（直接回车默认 `0.0.0.0`）、监听端口、目标地址和目标端口。
+3. 例如：`0.0.0.0:40000 → 203.0.113.10:443`。
 
-从自签切换 AnyTLS 域名证书时，推荐使用 `sb → 2 → 6 → 4 → 3 AnyTLS`（主菜单 `7` 也会进入同一向导）。脚本会检查证书可读性、有效期、公私钥匹配和域名覆盖，再把证书库条目、AnyTLS 域名和证书绑定作为同一次事务写入；随后执行 JSON 与 `sing-box check`、重启并重新生成订阅。Vmess、Hy2 和 AnyTLS 可以分别使用不同证书，也可以在向导中选择“全部协议”共用一张多 SAN 证书。任何检查、申请、配置校验或重启失败，原证书绑定和运行配置都会保留。切换成功后应在客户端重新导入最新订阅/分享链接。对选择了“跟踪源文件”的受管证书，systemd VPS 会每 6 小时（含随机延迟）检查一次；也可通过 `sb → 2 → 6 → 6` 立即同步、选项 `7` 开关自动同步。同步会先验证新证书有效期、公私钥、所有正在绑定的域名和两套内核配置，随后原子替换托管副本、更新固定证书订阅参数并重启；任一步失败都会恢复旧证书和服务。此同步器不会自行运行 ACME 或联网申请证书，只处理你已配置的本地续期源文件。
+每条规则固定同时转发 TCP 与 UDP。UFW 启用时，项目会管理对应的 TCP/UDP 放行规则。规则状态在 `/etc/vps-net-manager/realm/rules.json`，生成的配置在 `/etc/vps-net-manager/realm/config.toml`，systemd 单元是 `vps-net-manager-realm.service`。菜单还提供查看、删除、重启、日志和完整卸载；重启失败会回滚规则和本次新加的 UFW 放行。
 
-## 运维与故障处理
+## 7. 防火墙、内核与运维
 
-主菜单 `3` 应用最新状态并重启，`4` 更新/切换 Sing-box 内核，`5` 进入更新管理，`6` 同时查看 Sing-box 与 Xray 日志，`9` 是 TCP / BBR 管理，`11` 卸载。BBR 管理会显示内核、可用算法、当前拥塞控制、默认队列规则和脚本管理状态；推荐选项 `1`，它只在当前内核已提供 BBR 时写入 `/etc/sysctl.d/99-sing-box-yg-bbr.conf`，启用 `bbr + fq` 后立即验证，并保存启用前值供选项 `2` 回退。它不会自动更换内核。选项 `3` 是保留的旧版内核安装器，可能下载内核、修改引导并要求重启，只应在明确知情时使用。BBR 只影响 TCP，因此 Vless-Reality、AnyTLS 与非 Argo 的 Vmess-WS 可能受益；Hysteria2 属于 UDP/QUIC，不受 Linux TCP BBR 控制。卸载会移除本脚本创建的 BBR 持久化文件，但不会覆盖其他工具的 TCP 参数。脚本更新会先显示渠道和下载地址并要求确认；下载和校验成功后保存渠道并立即切换到新进程，所以菜单顶部的版本与渠道应当马上变化。确认卸载后会逐个停止并禁用 Sing-box、`sing-box-xray` 与 Argo 服务；如果 systemd 未能结束已解析出的 MainPID，则先 TERM、等待后再 KILL，避免删除服务文件后遗留运行进程。随后删除脚本拥有的 UFW 规则、`/etc/s-box`、systemd/OpenRC 服务文件、Hy2 防火墙跳跃链和 `/usr/local/bin/sb` 并立即返回终端；取消卸载则留在主菜单。自选其他官方 Sing-box 内核必须有对应官方 `sha256sum.txt`，没有就拒绝安装。下载、校验、`sing-box check` 或 `xray run -test` 失败时，临时文件会清理，旧配置不会替换。
+UFW 已启用时，协议端口和 Realm 端口会先放行新规则，服务成功后才移除项目拥有的旧规则。UFW 未安装或未启用时脚本不改动防火墙；云安全组仍由你管理。
 
-### Realm 端口转发（Debian / Ubuntu）
+主菜单 `3` 重新应用当前配置并重启；`4` 更新 Sing-box 内核；`6` 查看服务日志；`9` 管理原生 BBR；`11` 卸载。BBR 只影响 TCP，Hysteria2 的 QUIC/UDP 不受它控制。
 
-主菜单 `12` 提供 Realm 端口转发，仅在 Debian 或 Ubuntu 且使用 systemd 时可用。它下载并校验官方锁定的 Realm `v2.9.4` 二进制，不使用第三方可视化面板。先选 `1` 安装，然后选 `2` 依次填写监听地址（默认 `0.0.0.0`）、监听端口、目标地址和目标端口；例如 `0.0.0.0:40000 → 203.0.113.10:443`。Realm 的本模块配置以 TCP 与 UDP 同时转发为固定安全默认值，因此 UFW 启用时会同时放行对应的 TCP/UDP 端口。规则由 `/etc/s-box/realm/rules.json` 管理，生成的 TOML 在 `/etc/s-box/realm/config.toml`，服务为 `sing-box-realm.service`。添加或删除规则会先保存临时配置、放行新端口、再原子替换并重启；重启失败则恢复旧规则和新加的防火墙规则。选项 `3` 查看规则与状态，`4` 删除规则，`5` 重启，`6` 查看日志，`7` 删除 Realm、全部规则和本模块创建的 UFW 规则。卸载整个 `sb` 时 Realm 也会一并清理。
+卸载会停止项目创建的 Sing-box、Xray、Argo、Realm 和证书同步服务，删除项目状态、项目创建的 UFW 规则、Hy2 跳跃链及 `vpnm` 命令。不会删除系统其他服务或管理员自行创建的防火墙规则。
 
-遇到连接问题先检查安全组、防火墙、协议端口和 `sb → 6` 日志，再执行主菜单 `3` 重启。切换内核时，如果现有配置不能通过新内核检查，旧内核会保留。卸载需要输入大写 `YES`。
+## 8. 依赖校验失败
 
-旧版安装若没有 `/etc/s-box/protocols.json`，脚本会禁止直接修改并提示先卸载、后重装。schema 1 状态在更新后会自动迁移到多证书库并移除 TUIC；如果旧状态只启用了 TUIC，脚本不会擅自启用其他协议，而会显示仅含“卸载旧 TUIC 安装/返回终端”的安全页面，卸载后可重新安装。依赖校验失败时不要跳过校验；检查 VPS 到 GitHub/API 发布源的网络和系统时间后重试，或等待维护者同时更新脚本常量、`DEPENDENCY_LOCKS.md` 与版本说明。
+不要跳过校验。检查 VPS 的系统时间、DNS 和到 GitHub 发布源的网络，然后重试。每次依赖更新必须同时更新脚本常量、[DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md) 和版本说明。

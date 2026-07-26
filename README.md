@@ -1,36 +1,34 @@
-# sing-box-yg（VPS）
+# VPS Net Manager
 
-这是一个仅面向 VPS 的 Sing-box 管理器，支持 Vless-Reality、Vmess-WS、Hysteria2 与 AnyTLS；Vless-Reality 可选择 Sing-box 或 Xray-core 服务端。
+VPS Net Manager 是一个面向个人 VPS 的网络服务管理器。它集中管理 Sing-box、Xray-core Reality、Realm 端口转发、证书、UFW、防火墙跳跃、Argo、WARP 与 BBR。
 
-本仓库不再包含 Serv00、Hostuno、保活网页或相关 GitHub Actions。
+项目不包含面板、多用户计费、流量配额、Serv00/Hostuno、保活网页或第三方订阅转换服务。
 
-## 稳定版安装
+## 支持范围
 
-当前稳定版为 `v0.0.4`：
+| 模块 | 功能 |
+| --- | --- |
+| Sing-box | Vless-Reality、Vmess-WS、Hysteria2、AnyTLS |
+| Xray-core | 可选的 Vless-Reality 服务端，支持 SpiderX、指纹、ML-DSA-65 与回落限制 |
+| Realm | Debian/Ubuntu 上的 TCP+UDP 端口转发规则 |
+| 证书 | 多证书库、协议独立绑定、受管源文件同步与回滚 |
+| 客户端配置 | 分享链接、二维码、Mihomo、Sing-box 与聚合订阅 |
+
+## 安装
+
+当前版本：
 
 ```bash
-SBYG_CHANNEL=v0.0.4 bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/v0.0.4/sb.sh)
+VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/vps-net-manager/main/sb.sh)
 ```
 
-开发版 `main`：
+安装完成后运行 `vpnm`。如需使用某个已发布版本，将命令中的 `main` 替换为对应标签，并同时设置 `VPNM_CHANNEL=<标签>`。
 
-```bash
-SBYG_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-wong/sing-box-yg/main/sb.sh)
-```
+## 安全原则
 
-安装完成后运行 `sb` 进入管理菜单。
+- 外部脚本和二进制锁定版本或 commit，下载后必须通过 SHA-256 校验。
+- 协议和证书修改会先生成临时配置，通过 JSON、Sing-box 与 Xray（如启用）检查后再替换。
+- UFW 启用时，先放行新端口；服务重启成功后再删除项目创建的旧规则。
+- 所有订阅只生成已启用协议；自签证书使用固定值，受信证书使用正常 CA 校验。
 
-## 包含功能
-
-- 安装时多选协议，运行中可启用、停用和修改协议。
-- 生成分享链接、二维码、Mihomo、Sing-box 和聚合订阅。
-- Reality 候选扫描与推荐/可用/不可三级校验。
-- 多证书管理、证书来源同步与原子回滚。
-- UFW 端口放行、Argo、WARP、BBR 与内核管理。
-- Debian/Ubuntu 上的 Realm TCP+UDP 端口转发规则管理。
-
-完整的系统准备、证书、Reality、订阅、运维和故障处理说明见 [VPS_USAGE.md](VPS_USAGE.md)。
-
-## 依赖安全
-
-VPS 使用的外部脚本和二进制均锁定版本或 commit，并在下载后进行 SHA-256 校验；详情见 [DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md)。
+完整的安装、协议、证书、Realm、更新、卸载与故障排查见 [VPS_USAGE.md](VPS_USAGE.md)。下载锁定清单见 [DEPENDENCY_LOCKS.md](DEPENDENCY_LOCKS.md)。

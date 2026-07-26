@@ -1,4 +1,4 @@
-name: Go manager
+name: VPS Net Manager Go checks
 
 on:
   push:
@@ -29,8 +29,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-      - run: GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o sbyg-linux-${{ matrix.goarch }} ./cmd/sbyg
+      - run: GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o vpnm-linux-${{ matrix.goarch }} ./cmd/vpnm
       - uses: actions/upload-artifact@v4
         with:
-          name: sbyg-linux-${{ matrix.goarch }}
-          path: sbyg-linux-${{ matrix.goarch }}
+          name: vpnm-linux-${{ matrix.goarch }}
+          path: vpnm-linux-${{ matrix.goarch }}

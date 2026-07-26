@@ -19,9 +19,9 @@ This list is the source of truth for executable VPS downloads. A dependency refr
 | Cloudflared arm64 | Cloudflare official release | 2026.7.3 | `releases/download/2026.7.3/cloudflared-linux-arm64` | `65259e652a7bea08bf5df603233ab22b8bf3116af8df9f9206209af6a1b955c0` |
 | MetaCubeX geoip.db | MetaCubeX release asset | 2026-07-24T23:32:15Z / asset 488939089 | `api.github.com/repos/MetaCubeX/meta-rules-dat/releases/assets/488939089` | `fad057ea2b145d243383db031b5804836e92de30203f31691e974cb14820bf36` |
 | MetaCubeX geosite.db | MetaCubeX release asset | 2026-07-24T23:32:15Z / asset 488939110 | `api.github.com/repos/MetaCubeX/meta-rules-dat/releases/assets/488939110` | `2c17d05a29c30797f57101c2268eb1b8b640004f380c8c963773a3587cb320aa` |
-| sbwpph amd64 | sherlock-wong/sing-box-yg | repository binary | `raw.githubusercontent.com/sherlock-wong/sing-box-yg/<branch>/sbwpph_amd64` | `93c7c5d7cb2c82cef44de782ae030b5f8fdb15038e3e95662e451bce7d3ee531` |
-| sbwpph arm64 | sherlock-wong/sing-box-yg | repository binary | `raw.githubusercontent.com/sherlock-wong/sing-box-yg/<branch>/sbwpph_arm64` | `4a8f0419e4b848b99017128d532bd760f6daa4a7b0bc9f59ff166105db5c6e33` |
-| Reality target candidates | sherlock-wong/sing-box-yg | repository text asset | `raw.githubusercontent.com/sherlock-wong/sing-box-yg/<branch>/assets/reality-targets.txt` | `eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda` |
+| sbwpph amd64 | sherlock-wong/vps-net-manager | repository binary | `raw.githubusercontent.com/sherlock-wong/vps-net-manager/<branch>/sbwpph_amd64` | `93c7c5d7cb2c82cef44de782ae030b5f8fdb15038e3e95662e451bce7d3ee531` |
+| sbwpph arm64 | sherlock-wong/vps-net-manager | repository binary | `raw.githubusercontent.com/sherlock-wong/vps-net-manager/<branch>/sbwpph_arm64` | `4a8f0419e4b848b99017128d532bd760f6daa4a7b0bc9f59ff166105db5c6e33` |
+| Reality target candidates | sherlock-wong/vps-net-manager | repository text asset | `raw.githubusercontent.com/sherlock-wong/vps-net-manager/<branch>/assets/reality-targets.txt` | `eb83de80c1aaee01b11cceed5610ac3936ef7fbbcbfce49738a4a6503a010bda` |
 | Realm amd64 | zhboner/realm official release | 2.9.4 | `releases/download/v2.9.4/realm-x86_64-unknown-linux-gnu.tar.gz` | `9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd` |
 | Realm arm64 | zhboner/realm official release | 2.9.4 | `releases/download/v2.9.4/realm-aarch64-unknown-linux-gnu.tar.gz` | `1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99` |
 

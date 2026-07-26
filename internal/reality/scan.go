@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Result is intentionally JSON-friendly: sb.sh can consume this output while
-// the Go manager is introduced incrementally.
+// Result is intentionally JSON-friendly so the VPS manager can render it in
+// its interactive Reality selection flow.
 type Result struct {
 	Host        string `json:"host"`
 	Successes   int    `json:"successes"`
