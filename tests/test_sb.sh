@@ -257,6 +257,35 @@ check_case multi 1.13.14 "$CORE_DEFAULT" 3 vless hy2 anytls
 check_case four 1.13.14 "$CORE_DEFAULT" 4 vless vmess hy2 anytls
 check_case legacy 1.10.7 "$CORE_110" 3 vless vmess hy2
 
+# Enabling a previously disabled protocol must never silently consume its old
+# port: every transport gets the same random/custom/preconfigured port wizard.
+set_case_dir activation
+activation_state=$(make_state 1.13.14 "$CORE_DEFAULT")
+activation_state=$(jq '.protocols.vless.enabled=true | .protocols.vless.port=25001' <<<"$activation_state")
+printf '%s\n' "$activation_state" > "$STATE_FILE"
+saved_activation_apply=$(declare -f apply_state)
+saved_activation_confirm=$(declare -f confirm_change)
+saved_activation_port_available=$(declare -f port_available)
+saved_activation_random_port=$(declare -f random_port)
+saved_activation_certificate_matches_domain=$(declare -f certificate_matches_domain)
+activation_candidate=
+apply_state(){ activation_candidate=$1; }
+confirm_change(){ return 0; }
+port_available(){ return 0; }
+random_port(){ printf '29001\n'; }
+certificate_matches_domain(){ return 0; }
+toggle_protocol vmess <<< $'2\n26001\n1'
+[[ $(jq -r '.protocols.vmess.enabled' <<<"$activation_candidate") == true ]] || exit 1
+[[ $(jq -r '.protocols.vmess.port' <<<"$activation_candidate") == 26001 ]] || exit 1
+toggle_protocol hy2 <<< $'1\n1'
+[[ $(jq -r '.protocols.hy2.enabled' <<<"$activation_candidate") == true ]] || exit 1
+[[ $(jq -r '.protocols.hy2.port' <<<"$activation_candidate") == 29001 ]] || exit 1
+eval "$saved_activation_apply"
+eval "$saved_activation_confirm"
+eval "$saved_activation_port_available"
+eval "$saved_activation_random_port"
+eval "$saved_activation_certificate_matches_domain"
+
 # Protocol menus expose live enabled state, transport, port and TLS details.
 set_case_dir four
 protocol_line=$(protocol_status_line 1 vless)

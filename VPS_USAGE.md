@@ -36,6 +36,8 @@ VPNM_CHANNEL=main bash <(curl -fsSL https://raw.githubusercontent.com/sherlock-w
 
 每项配置先写入临时文件，再执行 JSON、`sing-box check` 和 Xray 检查（如启用）。失败时会保留原配置、原端口和原服务。
 
+从“管理协议”启用一个此前未启用的协议时，会先进入统一启用向导：可重新随机分配未占用端口、手动输入自定义端口，或保留原预设端口。启用前会显示该协议的关键参数；Vmess-WS、Hysteria2 和 AnyTLS 还会校验证书文件、公私钥及其 SAN 是否覆盖当前域名，不通过不会启动服务。若需要调整 Reality SNI、WS Path、TLS 证书、Hy2 带宽或 AnyTLS Padding，可取消启用后在该协议的“专项参数”中完成调整。
+
 未安装网络服务时，配置、应用配置、内核切换、服务日志、证书库和 WARP-plus 没有可操作的服务状态，因此菜单会标注“需先安装”。更新管理、WARP、TCP/BBR 管理和 Realm 端口转发不依赖 Sing-box 安装，可以单独使用。
 
 ## 4. Reality

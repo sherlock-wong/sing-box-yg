@@ -1,6 +1,8 @@
-v26.7.25-vpnm.8
+v26.7.25-vpnm.9
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
+
+改进：从协议列表启用任一未启用协议时，统一进入端口向导，可选随机、自定义或保留预设端口；启用前会按协议展示 Reality SNI、WS Path、TLS 证书、Hy2 带宽或 AnyTLS Padding，并校验普通 TLS 证书覆盖域名。
 
 改进：证书库视图会明确列出未启用的 Vless-Reality，并标注其不适用普通 TLS 证书库，同时展示 Reality SNI；普通 TLS 证书绑定仅适用于 Vmess-WS、Hysteria2 和 AnyTLS。
 

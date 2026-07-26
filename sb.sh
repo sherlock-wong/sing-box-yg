@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export LANG=C.UTF-8
 
-SCRIPT_VERSION='v26.7.25-vpnm.8'
+SCRIPT_VERSION='v26.7.25-vpnm.9'
 FORK_OWNER='sherlock-wong'
 FORK_REPO='vps-net-manager'
 STATE_DIR="${VPNM_STATE_DIR:-/etc/vps-net-manager}"
@@ -2647,6 +2647,118 @@ set_argo(){
   fi
   apply_state "$candidate"
 }
+protocol_port_used_by_enabled_peer(){ # tag port
+  local tag=$1 port=$2
+  jq -e --arg t "$tag" --argjson p "$port" \
+    '[.protocols | to_entries[] | select(.key != $t and .value.enabled and .value.port == $p)] | length > 0' \
+    "$STATE_FILE" >/dev/null
+}
+random_available_protocol_port(){ # tag
+  local tag=$1 p
+  while :; do
+    p=$(random_port)
+    port_available "$p" && ! protocol_port_used_by_enabled_peer "$tag" "$p" && {
+      printf '%s\n' "$p"
+      return 0
+    }
+  done
+}
+choose_protocol_activation_port(){ # tag -> sets ACTIVATION_PORT; 2 means user cancelled
+  local tag=$1 choice p current
+  ACTIVATION_PORT=
+  current=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
+  while :; do
+    menu_header '启用向导：监听端口' "主菜单 / 配置 / 协议 / $(protocol_label "$tag") / 启用"
+    dim "${tag} 未启用时不会监听；启用时请明确选择端口分配方式。"
+    menu_item 1 "推荐随机：重新挑选未占用的 $(protocol_transport "$tag") 端口"
+    menu_item 2 "自定义：手动指定 $(protocol_transport "$tag") 端口"
+    if valid_port "$current"; then
+      menu_item 3 "保留当前预设端口：${current}/$(protocol_transport "$tag")"
+    fi
+    menu_back '取消启用并返回协议设置'
+    if valid_port "$current"; then ask '请选择 [0-3]：' choice; else ask '请选择 [0-2]：' choice; fi
+    case "$choice" in
+      1)
+        p=$(random_available_protocol_port "$tag")
+        ACTIVATION_PORT=$p
+        return 0
+        ;;
+      2)
+        while :; do
+          ask "${tag} $(protocol_transport "$tag") 端口（1-65535，回车/0 返回端口选择）：" p
+          cancel_input "$p" && break
+          valid_port "$p" || { red '端口无效。'; continue; }
+          port_available "$p" || { red '端口已被其他进程占用。'; continue; }
+          protocol_port_used_by_enabled_peer "$tag" "$p" && { red '端口已被另一个已启用协议使用。'; continue; }
+          ACTIVATION_PORT=$p; return 0
+        done
+        ;;
+      3)
+        valid_port "$current" || { red '当前没有可保留的端口。'; continue; }
+        port_available "$current" || { red '当前预设端口已被其他进程占用，请选择随机或自定义端口。'; continue; }
+        protocol_port_used_by_enabled_peer "$tag" "$current" && { red '当前预设端口已被另一个已启用协议使用。'; continue; }
+        ACTIVATION_PORT=$current; return 0
+        ;;
+      0|'') return 2;;
+      *) red '无效输入。';;
+    esac
+  done
+}
+protocol_activation_prerequisites(){ # tag
+  local tag=$1 cert_id cert key domain tls
+  case "$tag" in
+    vless)
+      valid_domain_name "$(jq -r '.protocols.vless.sni' "$STATE_FILE")" || {
+        red 'Reality SNI 无效；请在“专项参数 → Reality SNI 与目标扫描”中重新设置。'; return 1;
+      }
+      return 0
+      ;;
+    vmess)
+      tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE")
+      [[ "$tls" == true ]] || return 0
+      ;;
+    hy2|anytls) ;;
+    *) return 1;;
+  esac
+  cert_id=$(jq -r --arg t "$tag" '.protocols[$t].certificate_id' "$STATE_FILE")
+  domain=$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")
+  cert=$(jq -r --arg id "$cert_id" '.certificates[$id].cert // empty' "$STATE_FILE")
+  key=$(jq -r --arg id "$cert_id" '.certificates[$id].key // empty' "$STATE_FILE")
+  certificate_pair_valid "$cert" "$key" || {
+    red "${tag} 绑定的证书不可读、已失效或与私钥不匹配；请先在“专项参数”中选择有效证书。"; return 1;
+  }
+  certificate_matches_domain "$cert" "$domain" || {
+    red "${tag} 当前证书不覆盖 ${domain}；请先在“专项参数”中修改域名或选择匹配证书。"; return 1;
+  }
+}
+show_protocol_activation_summary(){ # tag port
+  local tag=$1 p=$2 cert_id cert_name tls engine
+  echo
+  yellow "${tag} 即将启用的配置："
+  printf '  监听端口：%s/%s\n' "$p" "$(protocol_transport "$tag")"
+  case "$tag" in
+    vless)
+      engine=$(jq -r '.protocols.vless.engine' "$STATE_FILE")
+      printf '  Reality 服务端：%s；SNI：%s\n' "$engine" "$(jq -r '.protocols.vless.sni' "$STATE_FILE")"
+      dim '如需扫描或更换 SNI，请取消后进入“专项参数 → Reality SNI 与目标扫描”。'
+      ;;
+    vmess)
+      tls=$(jq -r '.protocols.vmess.tls' "$STATE_FILE")
+      printf '  WS Path：%s；TLS：%s\n' "$(jq -r '.protocols.vmess.path' "$STATE_FILE")" "$tls"
+      if [[ "$tls" == true ]]; then
+        cert_id=$(certificate_id_for_tag vmess); cert_name=$(jq -r --arg id "$cert_id" '.certificates[$id].name' "$STATE_FILE")
+        printf '  TLS 域名：%s；证书：%s\n' "$(jq -r '.protocols.vmess.domain' "$STATE_FILE")" "$cert_name"
+      fi
+      ;;
+    hy2|anytls)
+      cert_id=$(certificate_id_for_tag "$tag"); cert_name=$(jq -r --arg id "$cert_id" '.certificates[$id].name' "$STATE_FILE")
+      printf '  TLS 域名：%s；证书：%s\n' "$(jq -r --arg t "$tag" '.protocols[$t].domain' "$STATE_FILE")" "$cert_name"
+      [[ "$tag" == hy2 ]] && printf '  带宽：上行 %s Mbps / 下行 %s Mbps\n' "$(jq -r '.protocols.hy2.up_mbps' "$STATE_FILE")" "$(jq -r '.protocols.hy2.down_mbps' "$STATE_FILE")"
+      [[ "$tag" == anytls ]] && printf '  Padding：%s\n' "$(jq -r '.protocols.anytls.padding.mode' "$STATE_FILE")"
+      ;;
+  esac
+  return 0
+}
 toggle_protocol(){
   local tag=$1 state p label
   label=$(protocol_label "$tag")
@@ -2657,8 +2769,10 @@ toggle_protocol(){
     state=$(jq --arg t "$tag" '.protocols[$t].enabled=false' "$STATE_FILE")
   else
     [[ "$tag" != anytls || $(jq -r '.core' "$STATE_FILE") != 1.10* ]] || { red '1.10 内核不支持 AnyTLS。'; return 0; }
-    p=$(jq -r --arg t "$tag" '.protocols[$t].port' "$STATE_FILE")
-    if ! valid_port "$p" || ! port_available "$p"; then while :; do p=$(random_port); port_available "$p" && ! jq -e --argjson p "$p" '[.protocols[]|select(.enabled)|.port] | index($p)' "$STATE_FILE" >/dev/null && break; done; fi
+    choose_protocol_activation_port "$tag" || return 0
+    p=$ACTIVATION_PORT
+    protocol_activation_prerequisites "$tag" || return 0
+    show_protocol_activation_summary "$tag" "$p"
     confirm_change "确认启用 ${label}？" \
       "将使用 $(protocol_transport "$tag") 端口 ${p}，并同步配置、节点、订阅和 UFW（如已启用）。" || return 0
     state=$(jq --arg t "$tag" --argjson p "$p" '.protocols[$t].port=$p | .protocols[$t].enabled=true' "$STATE_FILE")
