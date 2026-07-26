@@ -952,7 +952,11 @@ initial_setup_summary(){ # settings tags
     done
     [[ " $tags " == *' vless '* ]] && printf '  Reality SNI：%s\n' "$(jq -r '.reality_sni' <<<"$settings")"
     if [[ " $tags " == *' vmess '* || " $tags " == *' hy2 '* || " $tags " == *' anytls '* ]]; then
-      printf '  普通 TLS 域名：%s（初始使用匹配的固定证书）\n' "$(jq -r '.tls_domain' <<<"$settings")"
+      if [[ $(jq -r '.tls_domain' <<<"$settings") == www.bing.com ]]; then
+        printf '  普通 TLS 域名：www.bing.com（初始固定证书）\n'
+      else
+        printf '  普通 TLS 域名：%s（随后检查证书库 / ACME / 导入证书）\n' "$(jq -r '.tls_domain' <<<"$settings")"
+      fi
     fi
     printf '  分享链接对外地址：%s\n' "$(jq -r '.public_address | if length==0 then "自动探测" else . end' <<<"$settings")"
   else
@@ -2113,6 +2117,98 @@ store_trusted_domain_certificate(){ # domain cert key; adds to library without b
   red '证书入库失败，原证书库和协议配置均已保留。'
   return 1
 }
+initial_find_trusted_certificate(){ # state domain; sets INITIAL_CERT_ID/CERT/KEY
+  local state=$1 domain=$2 id mode cert key
+  INITIAL_CERT_ID=; INITIAL_CERT=; INITIAL_KEY=
+  while IFS=$'\t' read -r id mode cert key; do
+    [[ "$mode" == trusted ]] || continue
+    if certificate_pair_valid "$cert" "$key" && certificate_matches_domain "$cert" "$domain"; then
+      INITIAL_CERT_ID=$id; INITIAL_CERT=$cert; INITIAL_KEY=$key
+      return 0
+    fi
+  done < <(jq -r '.certificates | to_entries[] | [.key,(.value.mode // (if .value.insecure then "pinned" else "trusted" end)),.value.cert,.value.key] | @tsv' <<<"$state")
+  return 1
+}
+initial_add_trusted_certificate(){ # state domain source-cert source-key -> INITIAL_TLS_STATE / INITIAL_CERT_ID
+  local state=$1 domain=$2 source_cert=$3 source_key=$4 cert key id
+  persist_domain_certificate "$domain" "$source_cert" "$source_key"
+  cert=$FOUND_CERT; key=$FOUND_KEY; id=$FOUND_CERT_ID
+  INITIAL_TLS_STATE=$(jq --arg id "$id" --arg domain "$domain" --arg cert "$cert" --arg key "$key" \
+    --arg source_cert "$source_cert" --arg source_key "$source_key" '
+      .certificates[$id]={name:$domain,cert:$cert,key:$key,mode:"trusted",insecure:false,
+        source:{type:"files",cert:$source_cert,key:$source_key,auto_sync:true}}
+    ' <<<"$state")
+  INITIAL_CERT_ID=$id
+}
+initial_bind_tls_certificate(){ # state tags domain certificate-id -> INITIAL_TLS_STATE
+  local state=$1 tags=$2 domain=$3 id=$4 tag
+  for tag in vmess hy2 anytls; do
+    [[ " $tags " == *" $tag "* ]] || continue
+    state=$(jq --arg t "$tag" --arg d "$domain" --arg id "$id" \
+      '.protocols[$t].domain=$d | .protocols[$t].certificate_id=$id' <<<"$state")
+  done
+  INITIAL_TLS_STATE=$state
+}
+initial_tls_certificate_setup(){ # state tags settings -> global INITIAL_TLS_STATE
+  local state=$1 tags=$2 settings=$3 domain choice
+  INITIAL_TLS_STATE=$state
+  jq -e '.custom==true' <<<"$settings" >/dev/null || return 0
+  [[ " $tags " == *' vmess '* || " $tags " == *' hy2 '* || " $tags " == *' anytls '* ]] || return 0
+  domain=$(jq -r '.tls_domain' <<<"$settings")
+  [[ "$domain" != www.bing.com ]] || return 0
+
+  menu_header '安装向导：普通 TLS 证书' '主菜单 / 安装 / 初始配置 / 证书'
+  dim "将为 ${domain} 检查证书库和已有 ACME 证书；只有受信证书会自动绑定。"
+  dim 'Cloudflare 域名申请 ACME 时必须保持“仅 DNS（灰云）”。'
+  if initial_find_trusted_certificate "$state" "$domain"; then
+    green "证书库中存在覆盖 ${domain} 的受信证书：${INITIAL_CERT}"
+    initial_bind_tls_certificate "$state" "$tags" "$domain" "$INITIAL_CERT_ID"
+    return 0
+  fi
+  if certificate_pair_valid /root/ygkkkca/cert.crt /root/ygkkkca/private.key && \
+     certificate_matches_domain /root/ygkkkca/cert.crt "$domain"; then
+    green "检测到覆盖 ${domain} 的已有 ACME 证书，正在写入证书库。"
+    initial_add_trusted_certificate "$state" "$domain" /root/ygkkkca/cert.crt /root/ygkkkca/private.key
+    initial_bind_tls_certificate "$INITIAL_TLS_STATE" "$tags" "$domain" "$INITIAL_CERT_ID"
+    return 0
+  fi
+
+  yellow "证书库与已有 ACME 证书中均没有覆盖 ${domain} 的受信证书。"
+  while :; do
+    menu_item 1 '运行锁定版 ACME 申请并写入证书库（推荐）'
+    menu_item 2 '导入已有证书并写入证书库'
+    menu_item 3 '暂时使用初始固定自签证书'
+    menu_back '取消本次安装'
+    ask '请选择 [0-3]：' choice
+    case "$choice" in
+      1)
+        if ! acme; then yellow 'ACME 脚本未正常完成，正在检查是否已生成有效证书。'; fi
+        if certificate_pair_valid /root/ygkkkca/cert.crt /root/ygkkkca/private.key && \
+           certificate_matches_domain /root/ygkkkca/cert.crt "$domain"; then
+          green "ACME 证书验证成功，正在写入 ${domain} 的证书库条目。"
+          initial_add_trusted_certificate "$state" "$domain" /root/ygkkkca/cert.crt /root/ygkkkca/private.key
+          initial_bind_tls_certificate "$INITIAL_TLS_STATE" "$tags" "$domain" "$INITIAL_CERT_ID"
+          return 0
+        fi
+        red "ACME 后仍未发现覆盖 ${domain} 的有效证书。"
+        yellow '可重试 ACME、导入已有证书，或暂时使用固定自签证书。'
+        ;;
+      2)
+        prompt_domain_certificate "$domain" || continue
+        initial_add_trusted_certificate "$state" "$domain" "$FOUND_CERT" "$FOUND_KEY"
+        initial_bind_tls_certificate "$INITIAL_TLS_STATE" "$tags" "$domain" "$INITIAL_CERT_ID"
+        return 0
+        ;;
+      3)
+        yellow '将使用与该域名匹配的初始固定自签证书；客户端需使用订阅中的证书固定值。'
+        initial_bind_tls_certificate "$state" "$tags" "$domain" default
+        return 0
+        ;;
+      0|'') return 2;;
+      *) red '无效输入。';;
+    esac
+  done
+}
 certificate_source_status(){ # source object -> short status
   local source=$1 type enabled cert
   type=$(jq -r '.type // "snapshot"' <<<"$source")
@@ -2711,6 +2807,11 @@ install_flow(){
     red '初始端口或域名在安装前校验失败，请重新安装并调整输入。'
     return 0
   }
+  initial_tls_certificate_setup "$state" "$tags" "$initial_settings" || {
+    yellow '安装已在普通 TLS 证书步骤取消；尚未生成服务配置或启动服务。'
+    return 0
+  }
+  state=$INITIAL_TLS_STATE
   state=$(jq --arg engine "$vless_engine" '.protocols.vless.engine=$engine' <<<"$state")
   if [[ "$vless_engine" == xray ]]; then install_xray; fi
   if ! printf '%s\n' "$state" | commit_state; then

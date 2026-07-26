@@ -202,6 +202,31 @@ if choose_initial_setup vless <<<"0" >/dev/null; then
   echo 'initial setup cancellation unexpectedly succeeded' >&2
   exit 1
 fi
+
+# A custom initial TLS domain uses a trusted library/ACME/import certificate
+# when available, and binds it before the first service configuration commit.
+set_case_dir initial-tls-certificate
+cp "$CORE_DEFAULT" "$STATE_DIR/sing-box"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=initial-tls.example.com' -addext 'subjectAltName=DNS:initial-tls.example.com' \
+  -keyout "$STATE_DIR/source.key" -out "$STATE_DIR/source.pem" >/dev/null 2>&1
+saved_port_available=$(declare -f port_available)
+port_available(){ return 0; }
+initial_tls_settings=$(jq -cn '{custom:true,ports:{anytls:21111},reality_sni:"www.apple.com",tls_domain:"initial-tls.example.com",public_address:""}')
+initial_tls_state=$(state_for_protocol_tags 1.13.14 anytls "$initial_tls_settings")
+eval "$saved_port_available"
+saved_initial_certificate_matches_domain=$(declare -f certificate_matches_domain)
+certificate_matches_domain(){ [[ "$1:$2" == "$STATE_DIR/source.pem:initial-tls.example.com" ]]; }
+initial_tls_certificate_setup "$initial_tls_state" anytls "$initial_tls_settings" <<< $'2\n'"$STATE_DIR/source.pem"$'\n'"$STATE_DIR/source.key"
+eval "$saved_initial_certificate_matches_domain"
+initial_tls_state=$INITIAL_TLS_STATE
+initial_tls_cert_id=$(jq -r '.protocols.anytls.certificate_id' <<<"$initial_tls_state")
+[[ "$initial_tls_cert_id" != default ]]
+jq -e --arg id "$initial_tls_cert_id" '
+  .protocols.anytls.domain=="initial-tls.example.com" and
+  .certificates[$id].mode=="trusted" and .certificates[$id].insecure==false and
+  .certificates[$id].source.auto_sync==true
+' <<<"$initial_tls_state" >/dev/null
+[[ -r "$(jq -r --arg id "$initial_tls_cert_id" '.certificates[$id].cert' <<<"$initial_tls_state")" ]]
 [[ $(choose_initial_reality_engine <<<"1") == sing-box ]]
 [[ $(choose_initial_reality_engine <<<"2") == xray ]]
 if choose_initial_reality_engine <<<"0" >/dev/null; then

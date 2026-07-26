@@ -1,4 +1,4 @@
-v26.7.25-vpnm.3
+v26.7.25-vpnm.4
 
 VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命令为 `vpnm`，服务名、UFW 注释、证书同步任务、Reality 临时文件和默认状态目录统一使用 `vps-net-manager`。
 
@@ -11,6 +11,8 @@ VPS Net Manager：项目已更名为 `sherlock-wong/vps-net-manager`。安装命
 改进：普通 TLS 协议修改证书域名时会筛选证书库中 SAN 覆盖该域名的有效证书，必须选择匹配项才能应用；协议操作菜单新增“查看当前协议配置”。
 
 改进：首次安装新增“推荐默认 / 自定义初始配置”。默认随机分配未占用端口；自定义模式可在安装前一次设置各协议端口、Reality SNI、普通 TLS 域名和分享链接对外地址，并校验端口占用与重复。
+
+改进：首次安装的自定义普通 TLS 域名会先检查证书库与已有 ACME 证书；没有受信证书时可在安装中申请 ACME、导入证书或明确保留固定自签模式。受信证书会入库并自动绑定本次选择的普通 TLS 协议。
 
 当前功能：按需管理 Sing-box 协议、可选 Xray-core Reality、Reality 目标扫描、证书库、AnyTLS、Hysteria2、Vmess-WS、WARP、TCP/BBR 与 Realm 端口转发。
 
