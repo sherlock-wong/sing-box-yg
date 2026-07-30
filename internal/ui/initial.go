@@ -67,35 +67,37 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 		candidate.Protocols.VLESSReality = vless
 	}
 	if selected[2] || selected[3] {
-		domain, err := prompter.askDefault("普通 TLS 域名（固定自签证书）", "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompter, "www.bing.com")
 		if err != nil {
 			return model.State{}, err
 		}
-		candidate, err = app.AddPinnedCertificate(ctx, stateDirectory, candidate, "default", "初始固定证书（"+domain+"）", domain, time.Now())
-		if err != nil {
-			return model.State{}, err
-		}
-		if selected[2] {
-			port, err := selectNewPort(prompter, "udp", candidate)
+		if confirmed {
+			candidate, err = app.AddPinnedCertificate(ctx, stateDirectory, candidate, "default", "初始固定证书（"+domain+"）", domain, time.Now())
 			if err != nil {
 				return model.State{}, err
 			}
-			password, err := randomToken(24)
-			if err != nil {
-				return model.State{}, err
+			if selected[2] {
+				port, err := selectNewPort(prompter, "udp", candidate)
+				if err != nil {
+					return model.State{}, err
+				}
+				password, err := randomToken(24)
+				if err != nil {
+					return model.State{}, err
+				}
+				candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: "default", UpMbps: 100, DownMbps: 100}
 			}
-			candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: "default", UpMbps: 100, DownMbps: 100}
-		}
-		if selected[3] {
-			port, err := selectNewPort(prompter, "tcp", candidate)
-			if err != nil {
-				return model.State{}, err
+			if selected[3] {
+				port, err := selectNewPort(prompter, "tcp", candidate)
+				if err != nil {
+					return model.State{}, err
+				}
+				password, err := randomToken(24)
+				if err != nil {
+					return model.State{}, err
+				}
+				candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: "default", Padding: model.Padding{Mode: model.PaddingDefault}}
 			}
-			password, err := randomToken(24)
-			if err != nil {
-				return model.State{}, err
-			}
-			candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: "default", Padding: model.Padding{Mode: model.PaddingDefault}}
 		}
 	}
 	if err := candidate.Validate(); err != nil {

@@ -217,9 +217,12 @@ func setVLESSSNI(configuration *model.VLESSReality, sni string) {
 
 func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {
 	if state.Protocols.Hysteria2 == nil {
-		domain, err := prompt.askDefault("普通 TLS 域名", "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompt, "www.bing.com")
 		if err != nil {
 			return state, false, err
+		}
+		if !confirmed {
+			return state, false, nil
 		}
 		var certificateID string
 		state, certificateID, err = ensurePinnedCertificate(ctx, prompt, stateDirectory, state, domain)
@@ -263,9 +266,12 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 	case "5":
 		state.Protocols.Hysteria2 = nil
 	case "6":
-		domain, err := prompt.askDefault("普通 TLS 域名", configuration.Domain)
+		domain, confirmed, err := promptTLSDomain(prompt, configuration.Domain)
 		if err != nil {
 			return state, false, err
+		}
+		if !confirmed {
+			return state, false, nil
 		}
 		configuration.Domain = domain
 	case "7":
@@ -284,9 +290,12 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 
 func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {
 	if state.Protocols.AnyTLS == nil {
-		domain, err := prompt.askDefault("普通 TLS 域名", "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompt, "www.bing.com")
 		if err != nil {
 			return state, false, err
+		}
+		if !confirmed {
+			return state, false, nil
 		}
 		var certificateID string
 		state, certificateID, err = ensurePinnedCertificate(ctx, prompt, stateDirectory, state, domain)
@@ -330,9 +339,12 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 	case "5":
 		state.Protocols.AnyTLS = nil
 	case "6":
-		domain, err := prompt.askDefault("普通 TLS 域名", configuration.Domain)
+		domain, confirmed, err := promptTLSDomain(prompt, configuration.Domain)
 		if err != nil {
 			return state, false, err
+		}
+		if !confirmed {
+			return state, false, nil
 		}
 		configuration.Domain = domain
 	case "7":
@@ -347,6 +359,20 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 		return state, false, fmt.Errorf("无效选择")
 	}
 	return state, true, nil
+}
+
+func promptTLSDomain(prompt *prompt, fallback string) (string, bool, error) {
+	value, err := prompt.ask("普通 TLS 域名（回车使用 " + fallback + "；输入 0 取消）：")
+	if err != nil {
+		return "", false, err
+	}
+	if value == "0" {
+		return "", false, nil
+	}
+	if value == "" {
+		return fallback, true, nil
+	}
+	return value, true, nil
 }
 
 func ensurePinnedCertificate(ctx context.Context, prompt *prompt, stateDirectory string, state model.State, domain string) (model.State, string, error) {

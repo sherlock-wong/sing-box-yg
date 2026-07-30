@@ -73,6 +73,21 @@ func TestSelectRealityEngineAllowsXray(t *testing.T) {
 	}
 }
 
+func TestAddingAnyTLSCanCancelAtDomainPrompt(t *testing.T) {
+	state := model.NewState()
+	var output strings.Builder
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("3\n0\n0\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || candidate.Protocols.AnyTLS != nil || len(candidate.Certificates) != 0 {
+		t.Fatalf("candidate = %+v, changed = %v", candidate, changed)
+	}
+	if !strings.Contains(output.String(), "输入 0 取消") {
+		t.Fatalf("prompt = %q", output.String())
+	}
+}
+
 func TestNewRealityKeyMaterialMatchesModelValidation(t *testing.T) {
 	privateKey, publicKey, shortID, err := newRealityKeyMaterial()
 	if err != nil {
