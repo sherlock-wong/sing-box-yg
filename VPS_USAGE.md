@@ -22,7 +22,9 @@ vpnm
 
 ## 证书
 
-固定证书使用 Go 标准库生成并记录 DER/SPKI SHA-256。受管证书可以设置 `source_cert` 和 `source_key`：`vpnm cert sync --quiet` 会先读取、验证公私钥、SAN 与有效期，再将证书、状态和服务配置作为同一事务替换。systemd 每 6 小时执行一次该命令。
+在 `vpnm` 主菜单选择“证书库与同步”可查看证书及 Hysteria2/AnyTLS 的绑定、导入已有 PEM 证书/私钥、创建固定自签证书，或立即同步受管来源。导入时可选择持续跟踪原始证书文件；启用后，systemd 每 6 小时执行一次同步。
+
+固定证书使用 Go 标准库生成并记录 DER/SPKI SHA-256。受管证书可以设置 `source_cert` 和 `source_key`：`vpnm cert sync --quiet` 会先读取、验证公私钥、SAN 与有效期，再将证书、状态和服务配置作为同一事务替换。导入或创建后，在协议管理的 Hysteria2/AnyTLS 菜单选择“选择证书”完成绑定；TLS 域名必须由所选证书的 SAN 覆盖。
 
 `vpnm cert acme` 只下载锁定 commit 和 SHA-256 的 ACME 脚本；脚本返回成功并不代表成功，管理器会再次验证指定证书和私钥。
 

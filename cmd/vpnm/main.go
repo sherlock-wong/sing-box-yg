@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/app"
 	"github.com/sherlock-wong/vps-net-manager/internal/bbr"
+	"github.com/sherlock-wong/vps-net-manager/internal/model"
 	"github.com/sherlock-wong/vps-net-manager/internal/platform"
 	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 	"github.com/sherlock-wong/vps-net-manager/internal/subscription"
@@ -83,13 +85,14 @@ func menu() {
 		fmt.Printf("  Vless-Reality：%s\n", protocolStatus(state.Protocols.VLESSReality != nil, state.Protocols.VLESSReality != nil && state.Protocols.VLESSReality.Enabled))
 		fmt.Printf("  Hysteria2：%s\n", protocolStatus(state.Protocols.Hysteria2 != nil, state.Protocols.Hysteria2 != nil && state.Protocols.Hysteria2.Enabled))
 		fmt.Printf("  AnyTLS：%s\n", protocolStatus(state.Protocols.AnyTLS != nil, state.Protocols.AnyTLS != nil && state.Protocols.AnyTLS.Enabled))
-		fmt.Println("\n  1. 查看当前状态")
+		fmt.Println("\n  1. 查看当前配置")
 		fmt.Println("  2. 重新应用当前配置")
 		fmt.Println("  3. 管理协议")
 		fmt.Println("  4. Realm 端口转发")
 		fmt.Println("  5. BBR 管理")
 		fmt.Println("  6. 显示分享链接和二维码")
 		fmt.Println("  7. 修改分享链接对外地址")
+		fmt.Println("  8. 证书库与同步")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -97,7 +100,7 @@ func menu() {
 		}
 		switch scanner.Text() {
 		case "1":
-			fmt.Printf("\n公网地址：%s\n", valueOrUnset(state.PublicAddress))
+			showCurrentConfiguration(state)
 		case "2":
 			if os.Geteuid() != 0 {
 				fmt.Fprintln(os.Stderr, "vpnm: 重新应用必须以 root 运行")
@@ -193,12 +196,195 @@ func menu() {
 			} else {
 				fmt.Println("分享链接对外地址已更新。")
 			}
+		case "8":
+			if os.Geteuid() != 0 {
+				fmt.Fprintln(os.Stderr, "vpnm: 证书管理必须以 root 运行")
+				continue
+			}
+			certificateMenu(scanner, stateDirectory)
 		case "0":
 			return
 		default:
 			fmt.Println("无效选择。")
 		}
 	}
+}
+
+func showCurrentConfiguration(state model.State) {
+	fmt.Printf("\n公网地址：%s\n", valueOrUnset(state.PublicAddress))
+	if configuration := state.Protocols.VLESSReality; configuration != nil {
+		fmt.Printf("\nVless-Reality（%s）\n  端口：%d/TCP\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
+	}
+	if configuration := state.Protocols.Hysteria2; configuration != nil {
+		certificate := state.Certificates[configuration.CertificateID]
+		fmt.Printf("\nHysteria2（%s）\n  端口：%d/UDP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
+	}
+	if configuration := state.Protocols.AnyTLS; configuration != nil {
+		certificate := state.Certificates[configuration.CertificateID]
+		fmt.Printf("\nAnyTLS（%s）\n  端口：%d/TCP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
+	}
+	if state.Protocols.VLESSReality == nil && state.Protocols.Hysteria2 == nil && state.Protocols.AnyTLS == nil {
+		fmt.Println("\n当前没有已添加的协议配置。")
+	}
+}
+
+func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
+	for {
+		state, err := app.LoadState(stateDirectory + "/state.json")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		fmt.Println("\n证书库与同步")
+		fmt.Println("  1. 查看证书库和协议绑定")
+		fmt.Println("  2. 导入已有证书和私钥")
+		fmt.Println("  3. 创建固定自签证书")
+		fmt.Println("  4. 立即同步受管证书来源")
+		fmt.Println("  0. 返回主菜单")
+		fmt.Print("请选择：")
+		if !scanner.Scan() {
+			return
+		}
+		switch strings.TrimSpace(scanner.Text()) {
+		case "1":
+			showCertificateLibrary(state)
+		case "2":
+			importCertificateMenu(scanner, stateDirectory, state)
+		case "3":
+			createPinnedCertificateMenu(scanner, stateDirectory, state)
+		case "4":
+			changed, err := app.SyncCertificates(context.Background(), state, time.Now(), app.DefaultApplyOptions(stateDirectory, &state))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+			} else if changed {
+				fmt.Println("证书已同步并重新应用配置。")
+			} else {
+				fmt.Println("没有配置可同步的证书。")
+			}
+		case "0":
+			return
+		default:
+			fmt.Println("无效选择。")
+		}
+	}
+}
+
+func showCertificateLibrary(state model.State) {
+	fmt.Println("\n普通 TLS 协议的证书绑定（Vless-Reality 使用 Reality 密钥，不使用此证书库）：")
+	if len(state.Certificates) == 0 {
+		fmt.Println("  证书库为空。")
+		return
+	}
+	ids := make([]string, 0, len(state.Certificates))
+	for id := range state.Certificates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		item := state.Certificates[id]
+		mode := item.Mode
+		if mode == "" {
+			mode = model.CertificateModeTrusted
+		}
+		fmt.Printf("\n[%s] %s（%s）\n  证书：%s\n  私钥：%s\n  DER SHA-256：%s\n  SPKI SHA-256：%s\n", id, item.Name, mode, item.Cert, item.Key, valueOrUnset(item.DER_SHA256), valueOrUnset(item.SPKI_SHA256))
+		if item.SourceCert != "" {
+			fmt.Printf("  受管同步来源：%s\n", item.SourceCert)
+		}
+	}
+	if configuration := state.Protocols.Hysteria2; configuration != nil {
+		fmt.Printf("\nHysteria2 绑定：%s（TLS 域名 %s）\n", configuration.CertificateID, configuration.Domain)
+	}
+	if configuration := state.Protocols.AnyTLS; configuration != nil {
+		fmt.Printf("AnyTLS 绑定：%s（TLS 域名 %s）\n", configuration.CertificateID, configuration.Domain)
+	}
+}
+
+func importCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	id, ok := promptMenuValue(scanner, "证书 ID（字母、数字、_ 或 -；输入 0 取消）：")
+	if !ok || id == "0" {
+		return
+	}
+	name, ok := promptMenuValue(scanner, "证书名称：")
+	if !ok || name == "" {
+		fmt.Println("证书名称不能为空。")
+		return
+	}
+	certificatePath, ok := promptMenuValue(scanner, "证书 PEM 文件路径：")
+	if !ok || certificatePath == "" {
+		return
+	}
+	keyPath, ok := promptMenuValue(scanner, "私钥 PEM 文件路径：")
+	if !ok || keyPath == "" {
+		return
+	}
+	modeChoice, ok := promptMenuValue(scanner, "客户端校验：1 受信证书（默认）  2 固定指纹：")
+	if !ok {
+		return
+	}
+	mode := model.CertificateModeTrusted
+	if modeChoice == "2" {
+		mode = model.CertificateModePinned
+	} else if modeChoice != "" && modeChoice != "1" {
+		fmt.Println("无效选择。")
+		return
+	}
+	followChoice, ok := promptMenuValue(scanner, "跟踪该文件并每 6 小时同步更新？1 是（默认）  0 否：")
+	if !ok {
+		return
+	}
+	if followChoice != "" && followChoice != "0" && followChoice != "1" {
+		fmt.Println("无效选择。")
+		return
+	}
+	candidate, artifacts, err := app.StageImportedCertificate(context.Background(), stateDirectory, state, id, name, certificatePath, keyPath, mode, followChoice != "0", time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	options := app.DefaultApplyOptions(stateDirectory, &state)
+	options.ExtraArtifacts = artifacts
+	if _, err := options.Apply(context.Background(), candidate); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("证书已导入证书库。可在协议管理中选择并绑定它。")
+}
+
+func createPinnedCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	id, ok := promptMenuValue(scanner, "证书 ID（字母、数字、_ 或 -；输入 0 取消）：")
+	if !ok || id == "0" {
+		return
+	}
+	name, ok := promptMenuValue(scanner, "证书名称：")
+	if !ok || name == "" {
+		fmt.Println("证书名称不能为空。")
+		return
+	}
+	domain, ok := promptMenuValue(scanner, "证书域名：")
+	if !ok || domain == "" {
+		fmt.Println("证书域名不能为空。")
+		return
+	}
+	candidate, artifacts, err := app.StagePinnedCertificate(context.Background(), stateDirectory, state, id, name, domain, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	options := app.DefaultApplyOptions(stateDirectory, &state)
+	options.ExtraArtifacts = artifacts
+	if _, err := options.Apply(context.Background(), candidate); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("固定自签证书已创建。绑定协议后，请通过重新生成的分享链接导入客户端指纹。")
+}
+
+func promptMenuValue(scanner *bufio.Scanner, label string) (string, bool) {
+	fmt.Print(label)
+	if !scanner.Scan() {
+		return "", false
+	}
+	return strings.TrimSpace(scanner.Text()), true
 }
 
 func bbrMenu(scanner *bufio.Scanner) {

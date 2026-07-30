@@ -39,7 +39,7 @@ func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
 	state := model.NewState()
 	state.Protocols.VLESSReality = configuration
 	var output strings.Builder
-	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n1\n0\n")), &output, t.TempDir(), state)
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n2\n0\n")), &output, t.TempDir(), state)
 	if err != nil {
 		t.Fatal(err)
 	}

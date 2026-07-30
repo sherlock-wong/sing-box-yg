@@ -5,10 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/app"
+	"github.com/sherlock-wong/vps-net-manager/internal/certificate"
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
 	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 )
@@ -74,35 +77,38 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换 UUID  4 删除配置  5 筛选/修改 Reality SNI  6 轮换 Reality 密钥和 Short ID  0 返回：")
+	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
 	configuration := state.Protocols.VLESSReality
 	switch choice {
 	case "1":
-		configuration.Enabled = !configuration.Enabled
+		showVLESSConfiguration(prompt.output, configuration)
+		return state, false, nil
 	case "2":
+		configuration.Enabled = !configuration.Enabled
+	case "3":
 		port, err := promptPort(prompt, configuration.Port, state, "tcp")
 		if err != nil {
 			return state, false, err
 		}
 		configuration.Port = port
-	case "3":
+	case "4":
 		uuid, err := randomUUID()
 		if err != nil {
 			return state, false, err
 		}
 		configuration.UUID = uuid
-	case "4":
-		state.Protocols.VLESSReality = nil
 	case "5":
+		state.Protocols.VLESSReality = nil
+	case "6":
 		sni, err := selectRealitySNI(ctx, prompt, stateDirectory)
 		if err != nil {
 			return state, false, err
 		}
 		setVLESSSNI(configuration, sni)
-	case "6":
+	case "7":
 		privateKey, publicKey, shortID, err := newRealityKeyMaterial()
 		if err != nil {
 			return state, false, err
@@ -202,28 +208,43 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 		state.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换密码  4 删除配置  0 返回：")
+	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换密码  5 删除配置  6 修改 TLS 域名  7 选择证书  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
 	configuration := state.Protocols.Hysteria2
 	switch choice {
 	case "1":
-		configuration.Enabled = !configuration.Enabled
+		showHysteria2Configuration(prompt.output, configuration, state.Certificates[configuration.CertificateID])
+		return state, false, nil
 	case "2":
+		configuration.Enabled = !configuration.Enabled
+	case "3":
 		port, err := promptPort(prompt, configuration.Port, state, "udp")
 		if err != nil {
 			return state, false, err
 		}
 		configuration.Port = port
-	case "3":
+	case "4":
 		password, err := randomToken(24)
 		if err != nil {
 			return state, false, err
 		}
 		configuration.Password = password
-	case "4":
+	case "5":
 		state.Protocols.Hysteria2 = nil
+	case "6":
+		domain, err := prompt.askDefault("普通 TLS 域名", configuration.Domain)
+		if err != nil {
+			return state, false, err
+		}
+		configuration.Domain = domain
+	case "7":
+		certificateID, err := selectCertificate(prompt, state, configuration.Domain)
+		if err != nil {
+			return state, false, err
+		}
+		configuration.CertificateID = certificateID
 	case "0":
 		return state, false, nil
 	default:
@@ -254,28 +275,43 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 		state.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换密码  4 删除配置  0 返回：")
+	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换密码  5 删除配置  6 修改 TLS 域名  7 选择证书  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
 	configuration := state.Protocols.AnyTLS
 	switch choice {
 	case "1":
-		configuration.Enabled = !configuration.Enabled
+		showAnyTLSConfiguration(prompt.output, configuration, state.Certificates[configuration.CertificateID])
+		return state, false, nil
 	case "2":
+		configuration.Enabled = !configuration.Enabled
+	case "3":
 		port, err := promptPort(prompt, configuration.Port, state, "tcp")
 		if err != nil {
 			return state, false, err
 		}
 		configuration.Port = port
-	case "3":
+	case "4":
 		password, err := randomToken(24)
 		if err != nil {
 			return state, false, err
 		}
 		configuration.Password = password
-	case "4":
+	case "5":
 		state.Protocols.AnyTLS = nil
+	case "6":
+		domain, err := prompt.askDefault("普通 TLS 域名", configuration.Domain)
+		if err != nil {
+			return state, false, err
+		}
+		configuration.Domain = domain
+	case "7":
+		certificateID, err := selectCertificate(prompt, state, configuration.Domain)
+		if err != nil {
+			return state, false, err
+		}
+		configuration.CertificateID = certificateID
 	case "0":
 		return state, false, nil
 	default:
@@ -323,6 +359,58 @@ func promptPort(prompt *prompt, current uint16, state model.State, network strin
 		}
 	}
 	return port, nil
+}
+
+func showVLESSConfiguration(output io.Writer, configuration *model.VLESSReality) {
+	fmt.Fprintln(output, "\nVless-Reality 当前配置")
+	fmt.Fprintf(output, "  状态：%s\n  端口：%d/TCP\n  节点名称：%s\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
+}
+
+func showHysteria2Configuration(output io.Writer, configuration *model.Hysteria2, certificate model.Certificate) {
+	fmt.Fprintln(output, "\nHysteria2 当前配置")
+	fmt.Fprintf(output, "  状态：%s\n  端口：%d/UDP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  带宽：上行 %d Mbps / 下行 %d Mbps\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.UpMbps, configuration.DownMbps)
+}
+
+func showAnyTLSConfiguration(output io.Writer, configuration *model.AnyTLS, certificate model.Certificate) {
+	fmt.Fprintln(output, "\nAnyTLS 当前配置")
+	fmt.Fprintf(output, "  状态：%s\n  端口：%d/TCP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  Padding：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.Padding.Mode)
+}
+
+func selectCertificate(prompt *prompt, state model.State, hostname string) (string, error) {
+	if len(state.Certificates) == 0 {
+		return "", fmt.Errorf("证书库为空；请先在主菜单的证书管理中导入或创建证书")
+	}
+	ids := make([]string, 0, len(state.Certificates))
+	for id := range state.Certificates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	fmt.Fprintln(prompt.output, "可用证书：")
+	for index, id := range ids {
+		item := state.Certificates[id]
+		fmt.Fprintf(prompt.output, "  %d. %s（%s，%s）\n", index+1, item.Name, id, item.Mode)
+	}
+	choice, err := prompt.ask("选择证书编号：")
+	if err != nil {
+		return "", err
+	}
+	index, err := strconv.Atoi(choice)
+	if err != nil || index < 1 || index > len(ids) {
+		return "", fmt.Errorf("证书编号无效")
+	}
+	item := state.Certificates[ids[index-1]]
+	certificatePEM, err := os.ReadFile(item.Cert)
+	if err != nil {
+		return "", fmt.Errorf("读取证书失败：%w", err)
+	}
+	keyPEM, err := os.ReadFile(item.Key)
+	if err != nil {
+		return "", fmt.Errorf("读取私钥失败：%w", err)
+	}
+	if _, err := certificate.Inspect(certificatePEM, keyPEM, hostname, time.Now()); err != nil {
+		return "", fmt.Errorf("所选证书不覆盖当前 TLS 域名 %s：%w", hostname, err)
+	}
+	return ids[index-1], nil
 }
 
 func usedPorts(state model.State) map[uint16]struct{} {
