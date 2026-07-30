@@ -67,3 +67,49 @@ func (adapter ACMEAdapter) Run(ctx context.Context, arguments []string, certific
 	}
 	return info, nil
 }
+
+// RunInteractive starts the locked ACME script with the administrator's
+// terminal attached, then independently verifies the requested output pair.
+// It is intentionally separate from Run so non-interactive systemd work can
+// never unexpectedly request terminal input.
+func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, keyPath, hostname string, now time.Time) (certificate.Info, error) {
+	if certificatePath == "" || keyPath == "" || hostname == "" {
+		return certificate.Info{}, fmt.Errorf("certificate path, key path, and hostname are required")
+	}
+	locks := adapter.Locks
+	if locks.ACME.Commit == "" {
+		var err error
+		locks, err = dependency.Embedded()
+		if err != nil {
+			return certificate.Info{}, err
+		}
+	}
+	if err := locks.Validate(); err != nil {
+		return certificate.Info{}, err
+	}
+	stage, err := os.MkdirTemp("", "vpnm-acme-")
+	if err != nil {
+		return certificate.Info{}, err
+	}
+	defer os.RemoveAll(stage)
+	script := filepath.Join(stage, "acme.sh")
+	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
+		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
+	}
+	if err := platform.RunAttached(ctx, platform.Command{Path: "bash", Args: []string{script}, Timeout: 10 * time.Minute}); err != nil {
+		return certificate.Info{}, fmt.Errorf("run ACME script: %w", err)
+	}
+	certificatePEM, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return certificate.Info{}, fmt.Errorf("read ACME certificate: %w", err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return certificate.Info{}, fmt.Errorf("read ACME key: %w", err)
+	}
+	info, err := certificate.Inspect(certificatePEM, keyPEM, hostname, now)
+	if err != nil {
+		return certificate.Info{}, fmt.Errorf("validate ACME certificate: %w", err)
+	}
+	return info, nil
+}

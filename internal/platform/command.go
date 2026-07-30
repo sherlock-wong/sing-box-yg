@@ -78,6 +78,33 @@ func Run(parent context.Context, command Command) (CommandResult, error) {
 	return result, &CommandError{Command: command, Result: result, Cause: err}
 }
 
+// RunAttached runs a deliberately interactive command with the caller's
+// terminal attached. It is reserved for explicitly requested setup flows
+// such as ACME, where a child program needs to ask the administrator for DNS
+// provider details. Normal manager commands must use Run instead.
+func RunAttached(parent context.Context, command Command) error {
+	if command.Path == "" {
+		return fmt.Errorf("command path is required")
+	}
+	if command.Timeout <= 0 {
+		command.Timeout = 30 * time.Second
+	}
+	executionContext, cancel := context.WithTimeout(parent, command.Timeout)
+	defer cancel()
+	execution := exec.CommandContext(executionContext, command.Path, command.Args...)
+	if len(command.Env) > 0 {
+		execution.Env = append(os.Environ(), command.Env...)
+	}
+	execution.Stdin, execution.Stdout, execution.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := execution.Run(); err != nil {
+		if executionContext.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("timed out after %s", command.Timeout)
+		}
+		return err
+	}
+	return nil
+}
+
 func redact(value string, secrets []string) string {
 	for _, secret := range secrets {
 		if secret != "" {

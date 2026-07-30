@@ -93,6 +93,7 @@ func menu() {
 		fmt.Println("  6. 显示分享链接和二维码")
 		fmt.Println("  7. 修改分享链接对外地址")
 		fmt.Println("  8. 证书库与同步")
+		fmt.Println("  9. 查看原始 JSON 配置")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -202,6 +203,8 @@ func menu() {
 				continue
 			}
 			certificateMenu(scanner, stateDirectory)
+		case "9":
+			showRawConfiguration(state)
 		case "0":
 			return
 		default:
@@ -228,6 +231,15 @@ func showCurrentConfiguration(state model.State) {
 	}
 }
 
+func showRawConfiguration(state model.State) {
+	encoded, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Printf("\n%s\n", encoded)
+}
+
 func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 	for {
 		state, err := app.LoadState(stateDirectory + "/state.json")
@@ -240,6 +252,7 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 		fmt.Println("  2. 导入已有证书和私钥")
 		fmt.Println("  3. 创建固定自签证书")
 		fmt.Println("  4. 立即同步受管证书来源")
+		fmt.Println("  5. 申请域名证书（ACME）")
 		fmt.Println("  0. 返回主菜单")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -261,6 +274,8 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 			} else {
 				fmt.Println("没有配置可同步的证书。")
 			}
+		case "5":
+			acmeCertificateMenu(scanner, stateDirectory, state)
 		case "0":
 			return
 		default:
@@ -377,6 +392,57 @@ func createPinnedCertificateMenu(scanner *bufio.Scanner, stateDirectory string, 
 		return
 	}
 	fmt.Println("固定自签证书已创建。绑定协议后，请通过重新生成的分享链接导入客户端指纹。")
+}
+
+func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	fmt.Println("\n申请域名证书（ACME）")
+	fmt.Println("Cloudflare DNS 请保持灰云；接下来锁定版本的 ACME 脚本会直接在终端中询问验证方式。")
+	domain, ok := promptMenuValue(scanner, "证书域名（输入 0 取消）：")
+	if !ok || domain == "" || domain == "0" {
+		return
+	}
+	id, ok := promptMenuValue(scanner, "证书 ID（回车使用域名转换值）：")
+	if !ok {
+		return
+	}
+	if id == "" {
+		id = strings.ReplaceAll(domain, ".", "-")
+	}
+	if _, exists := state.Certificates[id]; exists {
+		fmt.Println("该证书 ID 已存在；请返回后用“导入已有证书和私钥”更新或另选 ID。")
+		return
+	}
+	certificatePath, ok := promptMenuValue(scanner, "ACME 输出证书路径（回车使用 /root/ygkkkca/cert.crt）：")
+	if !ok {
+		return
+	}
+	if certificatePath == "" {
+		certificatePath = "/root/ygkkkca/cert.crt"
+	}
+	keyPath, ok := promptMenuValue(scanner, "ACME 输出私钥路径（回车使用 /root/ygkkkca/private.key）：")
+	if !ok {
+		return
+	}
+	if keyPath == "" {
+		keyPath = "/root/ygkkkca/private.key"
+	}
+	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入证书。")
+	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	candidate, artifacts, err := app.StageImportedCertificate(context.Background(), stateDirectory, state, id, domain, certificatePath, keyPath, model.CertificateModeTrusted, true, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	options := app.DefaultApplyOptions(stateDirectory, &state)
+	options.ExtraArtifacts = artifacts
+	if _, err := options.Apply(context.Background(), candidate); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("域名证书已验证并导入证书库；请在 Hysteria2 或 AnyTLS 的协议菜单中选择并绑定它。")
 }
 
 func promptMenuValue(scanner *bufio.Scanner, label string) (string, bool) {
