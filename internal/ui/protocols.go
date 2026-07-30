@@ -65,7 +65,11 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 		fmt.Fprintf(output, "  1. Vless-Reality（%s）\n", status(candidate.Protocols.VLESSReality != nil, vlessEnabled(candidate.Protocols.VLESSReality)))
 		fmt.Fprintf(output, "  2. Hysteria2（%s）\n", status(candidate.Protocols.Hysteria2 != nil, hy2Enabled(candidate.Protocols.Hysteria2)))
 		fmt.Fprintf(output, "  3. AnyTLS（%s）\n", status(candidate.Protocols.AnyTLS != nil, anyTLSEnabled(candidate.Protocols.AnyTLS)))
-		fmt.Fprintln(output, "  0. 返回主菜单")
+		if changed {
+			fmt.Fprintln(output, "  0. 保存并返回主菜单")
+		} else {
+			fmt.Fprintln(output, "  0. 返回主菜单")
+		}
 		choice, err := prompter.ask("请选择：")
 		if err != nil {
 			return model.State{}, false, err
@@ -94,6 +98,7 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 				return model.State{}, false, err
 			}
 			changed = true
+			fmt.Fprintln(output, "修改已暂存；请选择“0. 保存并返回主菜单”以应用到服务。")
 		}
 	}
 }

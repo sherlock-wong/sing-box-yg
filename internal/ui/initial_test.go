@@ -53,6 +53,29 @@ func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
 	}
 }
 
+func TestEditProtocolsMakesCoreChangeExplicitlyPendingUntilSaved(t *testing.T) {
+	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Protocols.VLESSReality = configuration
+	var output strings.Builder
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n8\n2\n0\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || candidate.Protocols.VLESSReality.Engine != model.RealityEngineXray {
+		t.Fatalf("candidate = %+v, changed = %v", candidate.Protocols.VLESSReality, changed)
+	}
+	if state.Protocols.VLESSReality.Engine != model.RealityEngineSingBox {
+		t.Fatal("editor changed original state")
+	}
+	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "保存并返回主菜单") {
+		t.Fatalf("missing save guidance: %q", output.String())
+	}
+}
+
 func TestViewingVLESSConfigurationStaysInProtocolMenu(t *testing.T) {
 	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
 	if err != nil {
