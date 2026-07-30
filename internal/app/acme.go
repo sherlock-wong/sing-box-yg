@@ -111,13 +111,17 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	if err != nil || method == "0" || method == "" {
 		return certificate.Info{}, fmt.Errorf("ACME 申请已取消")
 	}
-	fmt.Fprint(os.Stdout, "ACME 注册邮箱：")
+	fmt.Fprint(os.Stdout, "ACME 注册邮箱（回车跳过）：")
 	email, err := readACMEInput(reader)
-	if err != nil || email == "" {
-		return certificate.Info{}, fmt.Errorf("ACME 注册邮箱不能为空")
+	if err != nil {
+		return certificate.Info{}, err
 	}
 	base := []string{script, "--home", home, "--config-home", home, "--cert-home", home}
-	if result, err := platform.Run(ctx, platform.Command{Path: "bash", Args: append(append([]string{}, base...), "--register-account", "-m", email, "--server", "letsencrypt"), Timeout: 3 * time.Minute}); err != nil {
+	register := append(append([]string{}, base...), "--register-account", "--server", "letsencrypt")
+	if email != "" {
+		register = append(register, "-m", email)
+	}
+	if result, err := platform.Run(ctx, platform.Command{Path: "bash", Args: register, Timeout: 3 * time.Minute}); err != nil {
 		return certificate.Info{}, fmt.Errorf("register ACME account: %s: %w", strings.TrimSpace(result.Output), err)
 	}
 	issue := append(append([]string{}, base...), "--issue", "-d", hostname, "--ecc", "--server", "letsencrypt")
