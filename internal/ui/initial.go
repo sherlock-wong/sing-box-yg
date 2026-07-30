@@ -15,9 +15,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/sherlock-wong/vps-net-manager/internal/app"
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
 )
 
@@ -72,11 +70,13 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 			return model.State{}, err
 		}
 		if confirmed {
-			candidate, err = app.AddPinnedCertificate(ctx, stateDirectory, candidate, "default", "初始固定证书（"+domain+"）", domain, time.Now())
+			var certificateID string
+			var certificateConfirmed bool
+			candidate, certificateID, certificateConfirmed, err = ensureTLSCertificate(ctx, prompter, stateDirectory, candidate, domain)
 			if err != nil {
 				return model.State{}, err
 			}
-			if selected[2] {
+			if certificateConfirmed && selected[2] {
 				port, err := selectNewPort(prompter, "udp", candidate)
 				if err != nil {
 					return model.State{}, err
@@ -85,9 +85,9 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 				if err != nil {
 					return model.State{}, err
 				}
-				candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: "default", UpMbps: 100, DownMbps: 100}
+				candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
 			}
-			if selected[3] {
+			if certificateConfirmed && selected[3] {
 				port, err := selectNewPort(prompter, "tcp", candidate)
 				if err != nil {
 					return model.State{}, err
@@ -96,7 +96,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 				if err != nil {
 					return model.State{}, err
 				}
-				candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: "default", Padding: model.Padding{Mode: model.PaddingDefault}}
+				candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
 			}
 		}
 	}

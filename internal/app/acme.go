@@ -10,6 +10,7 @@ import (
 
 	"github.com/sherlock-wong/vps-net-manager/internal/certificate"
 	"github.com/sherlock-wong/vps-net-manager/internal/dependency"
+	"github.com/sherlock-wong/vps-net-manager/internal/model"
 	"github.com/sherlock-wong/vps-net-manager/internal/platform"
 )
 
@@ -112,4 +113,23 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 		return certificate.Info{}, fmt.Errorf("validate ACME certificate: %w", err)
 	}
 	return info, nil
+}
+
+// AddInteractiveACMECertificate runs the locked ACME flow and persists the
+// resulting verified certificate as a manager-owned, renewable certificate.
+// The state/configuration transaction is completed by the caller's normal
+// Apply operation; this function only stages the certificate files needed by
+// that candidate state.
+func AddInteractiveACMECertificate(ctx context.Context, stateDirectory string, state model.State, id, name, certificatePath, keyPath, hostname string, now time.Time) (model.State, error) {
+	if _, err := (ACMEAdapter{}).RunInteractive(ctx, certificatePath, keyPath, hostname, now); err != nil {
+		return model.State{}, err
+	}
+	candidate, artifacts, err := StageImportedCertificate(ctx, stateDirectory, state, id, name, certificatePath, keyPath, model.CertificateModeTrusted, true, now)
+	if err != nil {
+		return model.State{}, err
+	}
+	if _, err := (FilesystemStore{}).Commit(ctx, artifacts); err != nil {
+		return model.State{}, fmt.Errorf("store ACME certificate: %w", err)
+	}
+	return candidate, nil
 }

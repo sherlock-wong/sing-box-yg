@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/app"
@@ -225,9 +226,13 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 			return state, false, nil
 		}
 		var certificateID string
-		state, certificateID, err = ensurePinnedCertificate(ctx, prompt, stateDirectory, state, domain)
+		var certificateConfirmed bool
+		state, certificateID, certificateConfirmed, err = ensureTLSCertificate(ctx, prompt, stateDirectory, state, domain)
 		if err != nil {
 			return state, false, err
+		}
+		if !certificateConfirmed {
+			return state, false, nil
 		}
 		port, err := selectNewPort(prompt, "udp", state)
 		if err != nil {
@@ -298,9 +303,13 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 			return state, false, nil
 		}
 		var certificateID string
-		state, certificateID, err = ensurePinnedCertificate(ctx, prompt, stateDirectory, state, domain)
+		var certificateConfirmed bool
+		state, certificateID, certificateConfirmed, err = ensureTLSCertificate(ctx, prompt, stateDirectory, state, domain)
 		if err != nil {
 			return state, false, err
+		}
+		if !certificateConfirmed {
+			return state, false, nil
 		}
 		port, err := selectNewPort(prompt, "tcp", state)
 		if err != nil {
@@ -379,19 +388,102 @@ func promptTLSDomain(prompt *prompt, fallback string) (string, bool, error) {
 	return value, true, nil
 }
 
-func ensurePinnedCertificate(ctx context.Context, prompt *prompt, stateDirectory string, state model.State, domain string) (model.State, string, error) {
-	if _, exists := state.Certificates["default"]; exists {
-		return state, "default", nil
+func ensureTLSCertificate(ctx context.Context, prompt *prompt, stateDirectory string, state model.State, domain string) (model.State, string, bool, error) {
+	matches := matchingCertificateIDs(state, domain)
+	if len(matches) == 1 {
+		item := state.Certificates[matches[0]]
+		fmt.Fprintf(prompt.output, "证书库中已找到覆盖 %s 的证书：%s（%s）。\n", domain, item.Name, matches[0])
+		return state, matches[0], true, nil
 	}
-	choice, err := prompt.ask("证书库为空，创建固定自签证书？1 确认 / 0 取消：")
+	if len(matches) > 1 {
+		fmt.Fprintf(prompt.output, "证书库中找到 %d 张覆盖 %s 的证书：\n", len(matches), domain)
+		for index, id := range matches {
+			item := state.Certificates[id]
+			fmt.Fprintf(prompt.output, "  %d. %s（%s，%s）\n", index+1, item.Name, id, item.Mode)
+		}
+		choice, err := prompt.ask("选择证书编号（0 取消）：")
+		if err != nil {
+			return state, "", false, err
+		}
+		if choice == "0" {
+			return state, "", false, nil
+		}
+		index, err := strconv.Atoi(choice)
+		if err != nil || index < 1 || index > len(matches) {
+			return state, "", false, fmt.Errorf("证书编号无效")
+		}
+		return state, matches[index-1], true, nil
+	}
+
+	fmt.Fprintf(prompt.output, "证书库中没有覆盖 %s 的有效证书。\n", domain)
+	choice, err := prompt.ask("1 申请受信任域名证书（ACME）  2 使用固定自签证书（仅测试）  0 取消：")
 	if err != nil {
-		return state, "", err
+		return state, "", false, err
 	}
-	if choice != "1" {
-		return state, "", fmt.Errorf("需要普通 TLS 证书")
+	switch choice {
+	case "0", "":
+		return state, "", false, nil
+	case "1":
+		return issueACMECertificate(ctx, prompt, stateDirectory, state, domain)
+	case "2":
+		id := "default"
+		if _, exists := state.Certificates[id]; exists {
+			id = "self-" + certificateIDForDomain(domain)
+		}
+		candidate, err := app.AddPinnedCertificate(ctx, stateDirectory, state, id, "固定自签证书（"+domain+"）", domain, time.Now())
+		if err != nil {
+			return state, "", false, err
+		}
+		fmt.Fprintln(prompt.output, "已创建固定自签证书，仅建议用于测试；客户端应校验证书指纹。")
+		return candidate, id, true, nil
+	default:
+		return state, "", false, fmt.Errorf("无效选择")
 	}
-	candidate, err := app.AddPinnedCertificate(ctx, stateDirectory, state, "default", "初始固定证书（"+domain+"）", domain, time.Now())
-	return candidate, "default", err
+}
+
+func issueACMECertificate(ctx context.Context, prompt *prompt, stateDirectory string, state model.State, domain string) (model.State, string, bool, error) {
+	fmt.Fprintln(prompt.output, "申请前请确认该域名由你控制，且 DNS/CDN 设置满足 ACME 验证要求（Cloudflare 请保持灰云）。")
+	id, err := prompt.askDefault("证书 ID", "acme-"+certificateIDForDomain(domain))
+	if err != nil {
+		return state, "", false, err
+	}
+	if _, exists := state.Certificates[id]; exists {
+		return state, "", false, fmt.Errorf("证书 ID 已存在，请使用其他 ID 或在证书管理中更新")
+	}
+	certificatePath, err := prompt.askDefault("ACME 脚本临时证书路径", "/root/ygkkkca/cert.crt")
+	if err != nil {
+		return state, "", false, err
+	}
+	keyPath, err := prompt.askDefault("ACME 脚本临时私钥路径", "/root/ygkkkca/private.key")
+	if err != nil {
+		return state, "", false, err
+	}
+	fmt.Fprintln(prompt.output, "即将启动 ACME 交互流程；成功后会验证并写入证书管理。")
+	candidate, err := app.AddInteractiveACMECertificate(ctx, stateDirectory, state, id, domain, certificatePath, keyPath, domain, time.Now())
+	if err != nil {
+		return state, "", false, err
+	}
+	return candidate, id, true, nil
+}
+
+func matchingCertificateIDs(state model.State, hostname string) []string {
+	ids := make([]string, 0, len(state.Certificates))
+	for id, item := range state.Certificates {
+		certificatePEM, certErr := os.ReadFile(item.Cert)
+		keyPEM, keyErr := os.ReadFile(item.Key)
+		if certErr != nil || keyErr != nil {
+			continue
+		}
+		if _, err := certificate.Inspect(certificatePEM, keyPEM, hostname, time.Now()); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func certificateIDForDomain(domain string) string {
+	return strings.NewReplacer(".", "-", "*", "wildcard-").Replace(domain)
 }
 
 func promptPort(prompt *prompt, current uint16, state model.State, network string) (uint16, error) {

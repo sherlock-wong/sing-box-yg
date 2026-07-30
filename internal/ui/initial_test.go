@@ -5,7 +5,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sherlock-wong/vps-net-manager/internal/app"
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
 )
 
@@ -85,6 +87,41 @@ func TestAddingAnyTLSCanCancelAtDomainPrompt(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "输入 0 取消") {
 		t.Fatalf("prompt = %q", output.String())
+	}
+}
+
+func TestEnsureTLSCertificateOffersPinnedCertificateForTesting(t *testing.T) {
+	directory := t.TempDir()
+	state := model.NewState()
+	var output strings.Builder
+	candidate, certificateID, confirmed, err := ensureTLSCertificate(context.Background(), &prompt{scanner: bufio.NewScanner(strings.NewReader("2\n")), output: &output}, directory, state, "node.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed || certificateID != "default" || candidate.Certificates[certificateID].Mode != model.CertificateModePinned {
+		t.Fatalf("candidate = %+v, certificateID = %q, confirmed = %v", candidate, certificateID, confirmed)
+	}
+	if !strings.Contains(output.String(), "仅测试") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestEnsureTLSCertificateReusesMatchingCertificate(t *testing.T) {
+	directory := t.TempDir()
+	state, err := app.AddPinnedCertificate(context.Background(), directory, model.NewState(), "default", "test", "node.example.com", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	candidate, certificateID, confirmed, err := ensureTLSCertificate(context.Background(), &prompt{scanner: bufio.NewScanner(strings.NewReader("")), output: &output}, directory, state, "node.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed || certificateID != "default" || len(candidate.Certificates) != 1 {
+		t.Fatalf("candidate = %+v, certificateID = %q, confirmed = %v", candidate, certificateID, confirmed)
+	}
+	if !strings.Contains(output.String(), "已找到覆盖") {
+		t.Fatalf("output = %q", output.String())
 	}
 }
 
