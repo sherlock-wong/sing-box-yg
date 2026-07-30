@@ -32,7 +32,7 @@ func TestParseSelectionRejectsDuplicatesAndUnknownValues(t *testing.T) {
 }
 
 func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
-	configuration, err := newVLESS(443, "www.example.com")
+	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +59,17 @@ func TestSelectRealitySNIUsesManualValue(t *testing.T) {
 	}
 	if value != "www.cloudflare.com" {
 		t.Fatalf("SNI = %q", value)
+	}
+}
+
+func TestSelectRealityEngineAllowsXray(t *testing.T) {
+	var output strings.Builder
+	engine, err := selectRealityEngine(&prompt{scanner: bufio.NewScanner(strings.NewReader("2\n")), output: &output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine != model.RealityEngineXray {
+		t.Fatalf("engine = %q", engine)
 	}
 }
 

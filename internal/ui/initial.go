@@ -52,11 +52,15 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 		if err != nil {
 			return model.State{}, err
 		}
+		engine, err := selectRealityEngine(prompter)
+		if err != nil {
+			return model.State{}, err
+		}
 		port, err := selectNewPort(prompter, "tcp", candidate)
 		if err != nil {
 			return model.State{}, err
 		}
-		vless, err := newVLESS(port, sni)
+		vless, err := newVLESS(port, sni, engine)
 		if err != nil {
 			return model.State{}, err
 		}
@@ -214,7 +218,7 @@ func portFree(network string, port uint16) bool {
 	return true
 }
 
-func newVLESS(port uint16, sni string) (*model.VLESSReality, error) {
+func newVLESS(port uint16, sni string, engine model.RealityEngine) (*model.VLESSReality, error) {
 	uuid, err := randomUUID()
 	if err != nil {
 		return nil, err
@@ -223,7 +227,7 @@ func newVLESS(port uint16, sni string) (*model.VLESSReality, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &model.VLESSReality{Enabled: true, Name: "vless-reality", Port: port, Engine: model.RealityEngineSingBox, UUID: uuid, SNI: sni, PrivateKey: privateKey, PublicKey: publicKey, ShortID: shortID, Xray: model.XrayReality{Target: sni + ":443", ServerNames: []string{sni}, Fingerprint: "chrome", SpiderX: "/", FallbackProfile: "off"}}, nil
+	return &model.VLESSReality{Enabled: true, Name: "vless-reality", Port: port, Engine: engine, UUID: uuid, SNI: sni, PrivateKey: privateKey, PublicKey: publicKey, ShortID: shortID, Xray: model.XrayReality{Target: sni + ":443", ServerNames: []string{sni}, Fingerprint: "chrome", SpiderX: "/", FallbackProfile: "off"}}, nil
 }
 
 func newRealityKeyMaterial() (string, string, string, error) {

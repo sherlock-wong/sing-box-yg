@@ -70,14 +70,18 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		if err != nil {
 			return state, false, err
 		}
-		configuration, err := newVLESS(port, sni)
+		engine, err := selectRealityEngine(prompt)
+		if err != nil {
+			return state, false, err
+		}
+		configuration, err := newVLESS(port, sni, engine)
 		if err != nil {
 			return state, false, err
 		}
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  0 返回：")
+	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  8 切换服务端内核  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
@@ -117,12 +121,37 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		configuration.PublicKey = publicKey
 		configuration.ShortID = shortID
 		fmt.Fprintln(prompt.output, "Reality 密钥和 Short ID 已轮换；旧 Vless 节点会立即失效。")
+	case "8":
+		engine, err := selectRealityEngine(prompt)
+		if err != nil {
+			return state, false, err
+		}
+		if engine == configuration.Engine {
+			fmt.Fprintln(prompt.output, "已是该服务端内核，配置未改变。")
+			return state, false, nil
+		}
+		configuration.Engine = engine
 	case "0":
 		return state, false, nil
 	default:
 		return state, false, fmt.Errorf("无效选择")
 	}
 	return state, true, nil
+}
+
+func selectRealityEngine(prompt *prompt) (model.RealityEngine, error) {
+	choice, err := prompt.ask("Reality 服务端内核：1 Sing-box（默认）  2 Xray-core：")
+	if err != nil {
+		return "", err
+	}
+	switch choice {
+	case "", "1":
+		return model.RealityEngineSingBox, nil
+	case "2":
+		return model.RealityEngineXray, nil
+	default:
+		return "", fmt.Errorf("无效选择")
+	}
 }
 
 // selectRealitySNI keeps the quick manual path while exposing the embedded or
