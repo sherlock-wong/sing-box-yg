@@ -92,7 +92,7 @@ func menu() {
 		fmt.Println("  5. BBR 管理")
 		fmt.Println("  6. 显示分享链接和二维码")
 		fmt.Println("  7. 修改分享链接对外地址")
-		fmt.Println("  8. 证书库与同步")
+		fmt.Println("  8. 证书管理")
 		fmt.Println("  9. 查看原始 JSON 配置")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
@@ -247,7 +247,7 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 			fmt.Fprintln(os.Stderr, "vpnm:", err)
 			return
 		}
-		fmt.Println("\n证书库与同步")
+		fmt.Println("\n证书管理")
 		fmt.Println("  1. 查看证书库和协议绑定")
 		fmt.Println("  2. 导入已有证书和私钥")
 		fmt.Println("  3. 创建固定自签证书")
