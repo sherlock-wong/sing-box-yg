@@ -74,7 +74,7 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换 UUID  4 删除配置  5 筛选/修改 Reality SNI  0 返回：")
+	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换 UUID  4 删除配置  5 筛选/修改 Reality SNI  6 轮换 Reality 密钥和 Short ID  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
@@ -102,6 +102,15 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 			return state, false, err
 		}
 		setVLESSSNI(configuration, sni)
+	case "6":
+		privateKey, publicKey, shortID, err := newRealityKeyMaterial()
+		if err != nil {
+			return state, false, err
+		}
+		configuration.PrivateKey = privateKey
+		configuration.PublicKey = publicKey
+		configuration.ShortID = shortID
+		fmt.Fprintln(prompt.output, "Reality 密钥和 Short ID 已轮换；旧 Vless 节点会立即失效。")
 	case "0":
 		return state, false, nil
 	default:

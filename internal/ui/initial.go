@@ -186,16 +186,24 @@ func newVLESS(port uint16, sni string) (*model.VLESSReality, error) {
 	if err != nil {
 		return nil, err
 	}
-	curve := ecdh.X25519()
-	key, err := curve.GenerateKey(rand.Reader)
+	privateKey, publicKey, shortID, err := newRealityKeyMaterial()
 	if err != nil {
 		return nil, err
 	}
+	return &model.VLESSReality{Enabled: true, Name: "vless-reality", Port: port, Engine: model.RealityEngineSingBox, UUID: uuid, SNI: sni, PrivateKey: privateKey, PublicKey: publicKey, ShortID: shortID, Xray: model.XrayReality{Target: sni + ":443", ServerNames: []string{sni}, Fingerprint: "chrome", SpiderX: "/", FallbackProfile: "off"}}, nil
+}
+
+func newRealityKeyMaterial() (string, string, string, error) {
+	curve := ecdh.X25519()
+	key, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", "", err
+	}
 	shortBytes := make([]byte, 8)
 	if _, err := io.ReadFull(rand.Reader, shortBytes); err != nil {
-		return nil, err
+		return "", "", "", err
 	}
-	return &model.VLESSReality{Enabled: true, Name: "vless-reality", Port: port, Engine: model.RealityEngineSingBox, UUID: uuid, SNI: sni, PrivateKey: base64.RawURLEncoding.EncodeToString(key.Bytes()), PublicKey: base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), ShortID: hex.EncodeToString(shortBytes), Xray: model.XrayReality{Target: sni + ":443", ServerNames: []string{sni}, Fingerprint: "chrome", SpiderX: "/", FallbackProfile: "off"}}, nil
+	return base64.RawURLEncoding.EncodeToString(key.Bytes()), base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), hex.EncodeToString(shortBytes), nil
 }
 
 func randomUUID() (string, error) {

@@ -61,3 +61,15 @@ func TestSelectRealitySNIUsesManualValue(t *testing.T) {
 		t.Fatalf("SNI = %q", value)
 	}
 }
+
+func TestNewRealityKeyMaterialMatchesModelValidation(t *testing.T) {
+	privateKey, publicKey, shortID, err := newRealityKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Protocols.VLESSReality = &model.VLESSReality{Enabled: true, Port: 443, Engine: model.RealityEngineSingBox, UUID: "123e4567-e89b-42d3-a456-426614174000", SNI: "www.example.com", PrivateKey: privateKey, PublicKey: publicKey, ShortID: shortID}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("generated material is invalid: %v", err)
+	}
+}
