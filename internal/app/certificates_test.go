@@ -80,3 +80,35 @@ func TestStageReplacementCertificatePreservesCertificateID(t *testing.T) {
 		t.Fatalf("certificate = %+v, artifacts = %d", item, len(artifacts))
 	}
 }
+
+func TestCertificateSourceManagementUpdatesAndStopsTracking(t *testing.T) {
+	directory := t.TempDir()
+	certificatePEM, keyPEM, _, err := certificate.CreatePinned("node.example.com", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCert, sourceKey := filepath.Join(directory, "source-cert.pem"), filepath.Join(directory, "source-key.pem")
+	if err := os.WriteFile(sourceCert, certificatePEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourceKey, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Certificates["demo"] = model.Certificate{Name: "demo", Cert: filepath.Join(directory, "certs", "demo", "fullchain.pem"), Key: filepath.Join(directory, "certs", "demo", "privkey.pem"), Mode: model.CertificateModePinned}
+	candidate, artifacts, err := StageCertificateSourceUpdate(context.Background(), directory, state, "demo", sourceCert, sourceKey, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := candidate.Certificates["demo"]
+	if item.SourceCert != sourceCert || item.SourceKey != sourceKey || item.Mode != model.CertificateModePinned || len(artifacts) != 2 {
+		t.Fatalf("certificate = %+v, artifacts = %d", item, len(artifacts))
+	}
+	candidate, err = StopCertificateSourceTracking(candidate, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item := candidate.Certificates["demo"]; item.SourceCert != "" || item.SourceKey != "" {
+		t.Fatalf("certificate source = %+v", item)
+	}
+}

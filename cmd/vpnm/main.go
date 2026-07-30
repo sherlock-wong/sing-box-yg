@@ -271,7 +271,8 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 		fmt.Println("  2. 导入已有证书和私钥")
 		fmt.Println("  3. 创建固定自签证书")
 		fmt.Println("  4. 立即同步受管证书来源")
-		fmt.Println("  5. 申请域名证书（ACME）")
+		fmt.Println("  5. 管理证书来源路径")
+		fmt.Println("  6. 申请域名证书（ACME）")
 		fmt.Println("  0. 返回主菜单")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -294,6 +295,8 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 				fmt.Println("没有配置可同步的证书。")
 			}
 		case "5":
+			manageCertificateSourceMenu(scanner, stateDirectory, state)
+		case "6":
 			acmeCertificateMenu(scanner, stateDirectory, state)
 		case "0":
 			return
@@ -382,6 +385,77 @@ func importCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state 
 		return
 	}
 	fmt.Println("证书已导入证书库。可在协议管理中选择并绑定它。")
+}
+
+func manageCertificateSourceMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	if len(state.Certificates) == 0 {
+		fmt.Println("证书库为空，暂无可管理的来源路径。")
+		return
+	}
+	ids := make([]string, 0, len(state.Certificates))
+	for id := range state.Certificates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	fmt.Println("\n证书来源路径管理")
+	for _, id := range ids {
+		item := state.Certificates[id]
+		if item.SourceCert == "" {
+			fmt.Printf("  %s：未跟踪外部来源\n", id)
+			continue
+		}
+		fmt.Printf("  %s：%s\n", id, item.SourceCert)
+	}
+	id, ok := promptMenuValue(scanner, "证书 ID（输入 0 返回）：")
+	if !ok || id == "0" || id == "" {
+		return
+	}
+	item, exists := state.Certificates[id]
+	if !exists {
+		fmt.Println("未找到该证书 ID。")
+		return
+	}
+	fmt.Printf("\n[%s] %s\n  服务证书路径：%s\n  服务私钥路径：%s\n  当前来源证书：%s\n  当前来源私钥：%s\n", id, item.Name, item.Cert, item.Key, valueOrUnset(item.SourceCert), valueOrUnset(item.SourceKey))
+	choice, ok := promptMenuValue(scanner, "1 设置/更换来源路径并立即同步  2 停止追踪来源  0 返回：")
+	if !ok || choice == "0" || choice == "" {
+		return
+	}
+	options := app.DefaultApplyOptions(stateDirectory, &state)
+	switch choice {
+	case "1":
+		certificatePath, ok := promptMenuValue(scanner, "来源证书 PEM 路径（输入 0 取消）：")
+		if !ok || certificatePath == "0" || certificatePath == "" {
+			return
+		}
+		keyPath, ok := promptMenuValue(scanner, "来源私钥 PEM 路径（输入 0 取消）：")
+		if !ok || keyPath == "0" || keyPath == "" {
+			return
+		}
+		candidate, artifacts, err := app.StageCertificateSourceUpdate(context.Background(), stateDirectory, state, id, certificatePath, keyPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		options.ExtraArtifacts = artifacts
+		if _, err := options.Apply(context.Background(), candidate); err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		fmt.Println("证书来源路径已更新，并已同步到服务证书目录。")
+	case "2":
+		candidate, err := app.StopCertificateSourceTracking(state, id)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		if _, err := options.Apply(context.Background(), candidate); err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		fmt.Println("已停止追踪外部来源；当前服务证书会保留。")
+	default:
+		fmt.Println("无效选择。")
+	}
 }
 
 func createPinnedCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {

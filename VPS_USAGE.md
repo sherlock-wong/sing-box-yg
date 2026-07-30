@@ -23,7 +23,7 @@ vm
 
 ## 证书
 
-在 `vm` 主菜单选择“证书管理”可查看证书及 Hysteria2/AnyTLS 的绑定、导入已有 PEM 证书/私钥、创建固定自签证书、运行锁定版 ACME 域名证书申请，或立即同步受管来源。导入时可选择持续跟踪原始证书文件；启用后，systemd 每 6 小时执行一次同步。申请 ACME 时，脚本会在当前终端交互；VPNM 将临时输出固定在 `/etc/vps-net-manager/acme/<证书ID>/`，验证 SAN、公私钥与有效期后归档为 `/etc/vps-net-manager/certs/<证书ID>/fullchain.pem` 和 `privkey.pem`。
+在 `vm` 主菜单选择“证书管理”可查看证书及 Hysteria2/AnyTLS 的绑定、导入已有 PEM 证书/私钥、创建固定自签证书、运行锁定版 ACME 域名证书申请，或立即同步受管来源。“管理证书来源路径”可为已入库证书更换外部 PEM 证书/私钥路径，或停止追踪来源；服务实际使用的归档路径固定在 `/etc/vps-net-manager/certs/<证书ID>/`。导入时可选择持续跟踪原始证书文件；启用后，systemd 每 6 小时执行一次同步。申请 ACME 时，脚本会在当前终端交互；VPNM 将临时输出固定在 `/etc/vps-net-manager/acme/<证书ID>/`，验证 SAN、公私钥与有效期后归档为 `/etc/vps-net-manager/certs/<证书ID>/fullchain.pem` 和 `privkey.pem`。
 
 新增 Hysteria2 或 AnyTLS 后，VPNM 会先查找覆盖所填域名的有效证书；找不到时可选择申请 ACME 受信任证书，或仅为测试创建固定自签证书。ACME 前请确认域名可由该 VPS 完成验证；自签证书仅建议用于测试，客户端应校验证书指纹。
 

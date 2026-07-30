@@ -64,6 +64,37 @@ func StageReplacementCertificate(ctx context.Context, stateDirectory string, sta
 	return stageImportedCertificate(ctx, stateDirectory, state, id, item.Name, sourceCert, sourceKey, model.CertificateModeTrusted, true, true, now)
 }
 
+// StageCertificateSourceUpdate replaces a library certificate with a validated
+// source pair and keeps that pair as its future synchronization source.
+func StageCertificateSourceUpdate(ctx context.Context, stateDirectory string, state model.State, id, sourceCert, sourceKey string, now time.Time) (model.State, []Artifact, error) {
+	item, exists := state.Certificates[id]
+	if !exists {
+		return model.State{}, nil, fmt.Errorf("certificate ID does not exist")
+	}
+	mode := item.Mode
+	if mode == "" {
+		mode = model.CertificateModeTrusted
+	}
+	return stageImportedCertificate(ctx, stateDirectory, state, id, item.Name, sourceCert, sourceKey, mode, true, true, now)
+}
+
+// StopCertificateSourceTracking keeps the current manager-owned certificate
+// files but disables subsequent synchronization from an external source.
+func StopCertificateSourceTracking(state model.State, id string) (model.State, error) {
+	candidate := model.NewSnapshot(state).Snapshot()
+	item, exists := candidate.Certificates[id]
+	if !exists {
+		return model.State{}, fmt.Errorf("certificate ID does not exist")
+	}
+	item.SourceCert = ""
+	item.SourceKey = ""
+	candidate.Certificates[id] = item
+	if err := candidate.Validate(); err != nil {
+		return model.State{}, err
+	}
+	return candidate, nil
+}
+
 func stageImportedCertificate(ctx context.Context, stateDirectory string, state model.State, id, name, sourceCert, sourceKey string, mode model.CertificateMode, followSource, replaceExisting bool, now time.Time) (model.State, []Artifact, error) {
 	if err := ctx.Err(); err != nil {
 		return model.State{}, nil, err
