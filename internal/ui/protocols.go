@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -495,20 +496,47 @@ func issueACMECertificate(ctx context.Context, prompt *prompt, stateDirectory st
 	if _, exists := state.Certificates[id]; exists {
 		return state, "", false, fmt.Errorf("证书 ID 已存在，请使用其他 ID 或在证书管理中更新")
 	}
-	certificatePath, err := prompt.askDefault("ACME 脚本临时证书路径", "/root/ygkkkca/cert.crt")
+	certificatePath, keyPath := acmeOutputPaths(stateDirectory, id)
+	overwrite, err := confirmACMEOutputOverwrite(prompt, stateDirectory, id)
 	if err != nil {
 		return state, "", false, err
 	}
-	keyPath, err := prompt.askDefault("ACME 脚本临时私钥路径", "/root/ygkkkca/private.key")
-	if err != nil {
-		return state, "", false, err
+	if !overwrite {
+		return state, "", false, nil
 	}
-	fmt.Fprintln(prompt.output, "即将启动 ACME 交互流程；成功后会验证并写入证书管理。")
+	fmt.Fprintf(prompt.output, "即将启动 ACME 交互流程；证书临时输出到 %s，成功后归档到证书管理。\n", filepath.Dir(certificatePath))
 	candidate, err := app.AddInteractiveACMECertificate(ctx, stateDirectory, state, id, domain, certificatePath, keyPath, domain, time.Now())
 	if err != nil {
 		return state, "", false, err
 	}
 	return candidate, id, true, nil
+}
+
+func acmeOutputPaths(stateDirectory, id string) (string, string) {
+	directory := filepath.Join(stateDirectory, "acme", id)
+	return filepath.Join(directory, "fullchain.pem"), filepath.Join(directory, "privkey.pem")
+}
+
+func confirmACMEOutputOverwrite(prompt *prompt, stateDirectory, id string) (bool, error) {
+	paths := []string{
+		filepath.Join(stateDirectory, "acme", id),
+		filepath.Join(stateDirectory, "certs", id),
+	}
+	for _, path := range paths {
+		_, err := os.Stat(path)
+		if err == nil {
+			fmt.Fprintf(prompt.output, "检测到该证书 ID 的保存路径已存在：%s\n", path)
+			choice, err := prompt.ask("1 覆盖现有证书  0 取消：")
+			if err != nil {
+				return false, err
+			}
+			return choice == "1", nil
+		}
+		if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func matchingCertificateIDs(state model.State, hostname string) []string {

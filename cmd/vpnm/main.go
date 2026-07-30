@@ -429,9 +429,12 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	}
 	_, registered := state.Certificates[id]
 	targetDirectory := filepath.Join(stateDirectory, "certs", id)
+	acmeDirectory := filepath.Join(stateDirectory, "acme", id)
 	_, certificateExists := os.Stat(filepath.Join(targetDirectory, "fullchain.pem"))
 	_, keyExists := os.Stat(filepath.Join(targetDirectory, "privkey.pem"))
-	overwrite := registered || certificateExists == nil || keyExists == nil
+	_, acmeCertificateExists := os.Stat(filepath.Join(acmeDirectory, "fullchain.pem"))
+	_, acmeKeyExists := os.Stat(filepath.Join(acmeDirectory, "privkey.pem"))
+	overwrite := registered || certificateExists == nil || keyExists == nil || acmeCertificateExists == nil || acmeKeyExists == nil
 	if overwrite {
 		fmt.Printf("检测到证书 ID 或保存路径已存在：%s\n", targetDirectory)
 		choice, ok := promptMenuValue(scanner, "1 覆盖现有证书  0 取消：")
@@ -440,21 +443,9 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 			return
 		}
 	}
-	certificatePath, ok := promptMenuValue(scanner, "ACME 脚本临时证书路径（回车使用 /root/ygkkkca/cert.crt）：")
-	if !ok {
-		return
-	}
-	if certificatePath == "" {
-		certificatePath = "/root/ygkkkca/cert.crt"
-	}
-	keyPath, ok := promptMenuValue(scanner, "ACME 脚本临时私钥路径（回车使用 /root/ygkkkca/private.key）：")
-	if !ok {
-		return
-	}
-	if keyPath == "" {
-		keyPath = "/root/ygkkkca/private.key"
-	}
-	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入到 /etc/vps-net-manager/certs/<证书ID>/fullchain.pem 和 privkey.pem。")
+	certificatePath := filepath.Join(acmeDirectory, "fullchain.pem")
+	keyPath := filepath.Join(acmeDirectory, "privkey.pem")
+	fmt.Printf("即将启动 ACME 交互流程；证书临时输出到 %s，完成后会验证并归档到 %s。\n", acmeDirectory, targetDirectory)
 	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return

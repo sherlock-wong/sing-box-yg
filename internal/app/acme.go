@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/certificate"
@@ -46,6 +47,9 @@ func (adapter ACMEAdapter) Run(ctx context.Context, arguments []string, certific
 	script := filepath.Join(stage, "acme.sh")
 	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
 		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
+	}
+	if err := configureACMEOutputPaths(script, certificatePath, keyPath); err != nil {
+		return certificate.Info{}, fmt.Errorf("configure ACME output paths: %w", err)
 	}
 	runner := adapter.Runner
 	if runner == nil {
@@ -97,6 +101,9 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
 		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
 	}
+	if err := configureACMEOutputPaths(script, certificatePath, keyPath); err != nil {
+		return certificate.Info{}, fmt.Errorf("configure ACME output paths: %w", err)
+	}
 	if err := platform.RunAttached(ctx, platform.Command{Path: "bash", Args: []string{script}, Timeout: 10 * time.Minute}); err != nil {
 		return certificate.Info{}, fmt.Errorf("run ACME script: %w", err)
 	}
@@ -113,6 +120,27 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 		return certificate.Info{}, fmt.Errorf("validate ACME certificate: %w", err)
 	}
 	return info, nil
+}
+
+// configureACMEOutputPaths keeps the verified upstream script but rewrites its
+// fixed legacy output location before execution. The certificate is therefore
+// never written under /root and remains within the manager's state directory.
+func configureACMEOutputPaths(scriptPath, certificatePath, keyPath string) error {
+	certificateDirectory := filepath.Dir(certificatePath)
+	if err := os.MkdirAll(certificateDirectory, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return err
+	}
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return err
+	}
+	configured := strings.ReplaceAll(string(script), "/root/ygkkkca/cert.crt", certificatePath)
+	configured = strings.ReplaceAll(configured, "/root/ygkkkca/private.key", keyPath)
+	configured = strings.ReplaceAll(configured, "/root/ygkkkca", certificateDirectory)
+	return os.WriteFile(scriptPath, []byte(configured), 0o700)
 }
 
 // AddInteractiveACMECertificate runs the locked ACME flow and persists the

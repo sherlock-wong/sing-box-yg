@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,33 @@ func TestACMEAdapterValidatesMaterialAfterScript(t *testing.T) {
 	})}
 	if _, err := adapter.Run(context.Background(), nil, certPath, keyPath, "node.example.com", now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConfigureACMEOutputPathsRemovesLegacyDirectory(t *testing.T) {
+	directory := t.TempDir()
+	scriptPath := filepath.Join(directory, "acme.sh")
+	legacyScript := []byte("mkdir -p /root/ygkkkca\ncp x /root/ygkkkca/cert.crt\ncp y /root/ygkkkca/private.key\nrm -rf /root/ygkkkca\n")
+	if err := os.WriteFile(scriptPath, legacyScript, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	certificatePath := filepath.Join(directory, "managed", "demo", "fullchain.pem")
+	keyPath := filepath.Join(directory, "managed", "demo", "privkey.pem")
+	if err := configureACMEOutputPaths(scriptPath, certificatePath, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configured), "/root/ygkkkca") {
+		t.Fatalf("legacy path remains: %s", configured)
+	}
+	if !strings.Contains(string(configured), certificatePath) || !strings.Contains(string(configured), keyPath) {
+		t.Fatalf("configured paths missing: %s", configured)
+	}
+	if _, err := os.Stat(filepath.Dir(certificatePath)); err != nil {
+		t.Fatalf("certificate output directory was not created: %v", err)
 	}
 }
 
