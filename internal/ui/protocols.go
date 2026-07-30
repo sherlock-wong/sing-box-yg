@@ -489,9 +489,16 @@ func ensureTLSCertificate(ctx context.Context, prompt *prompt, stateDirectory st
 
 func issueACMECertificate(ctx context.Context, prompt *prompt, stateDirectory string, state model.State, domain string) (model.State, string, bool, error) {
 	fmt.Fprintln(prompt.output, "申请前请确认该域名由你控制，且 DNS/CDN 设置满足 ACME 验证要求（Cloudflare 请保持灰云）。")
-	id, err := prompt.askDefault("证书 ID", "acme-"+certificateIDForDomain(domain))
+	defaultID := "acme-" + certificateIDForDomain(domain)
+	id, err := prompt.ask("证书 ID（回车使用 " + defaultID + "；输入 0 取消）：")
 	if err != nil {
 		return state, "", false, err
+	}
+	if id == "0" {
+		return state, "", false, nil
+	}
+	if id == "" {
+		id = defaultID
 	}
 	if _, exists := state.Certificates[id]; exists {
 		return state, "", false, fmt.Errorf("证书 ID 已存在，请使用其他 ID 或在证书管理中更新")

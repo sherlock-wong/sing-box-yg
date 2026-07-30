@@ -420,8 +420,8 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	if !ok || domain == "" || domain == "0" {
 		return
 	}
-	id, ok := promptMenuValue(scanner, "证书 ID（回车使用域名转换值）：")
-	if !ok {
+	id, ok := promptMenuValue(scanner, "证书 ID（回车使用域名转换值；输入 0 取消）：")
+	if !ok || id == "0" {
 		return
 	}
 	if id == "" {

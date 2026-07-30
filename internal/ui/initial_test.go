@@ -133,6 +133,21 @@ func TestAddingAnyTLSCanCancelAtDomainPrompt(t *testing.T) {
 	}
 }
 
+func TestAddingAnyTLSCanCancelAtACMECertificateIDPrompt(t *testing.T) {
+	state := model.NewState()
+	var output strings.Builder
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("3\nnode.example.com\n1\n0\n0\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || candidate.Protocols.AnyTLS != nil || len(candidate.Certificates) != 0 {
+		t.Fatalf("candidate = %+v, changed = %v", candidate, changed)
+	}
+	if !strings.Contains(output.String(), "输入 0 取消") {
+		t.Fatalf("prompt = %q", output.String())
+	}
+}
+
 func TestEnsureTLSCertificateOffersPinnedCertificateForTesting(t *testing.T) {
 	directory := t.TempDir()
 	state := model.NewState()
