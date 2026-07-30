@@ -82,62 +82,65 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  8 切换服务端内核  0 返回：")
-	if err != nil {
-		return state, false, err
-	}
 	configuration := state.Protocols.VLESSReality
-	switch choice {
-	case "1":
-		showVLESSConfiguration(prompt.output, configuration)
-		return state, false, nil
-	case "2":
-		configuration.Enabled = !configuration.Enabled
-	case "3":
-		port, err := promptPort(prompt, configuration.Port, state, "tcp")
+	for {
+		choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  8 切换服务端内核  0 返回：")
 		if err != nil {
 			return state, false, err
 		}
-		configuration.Port = port
-	case "4":
-		uuid, err := randomUUID()
-		if err != nil {
-			return state, false, err
-		}
-		configuration.UUID = uuid
-	case "5":
-		state.Protocols.VLESSReality = nil
-	case "6":
-		sni, err := selectRealitySNI(ctx, prompt, stateDirectory)
-		if err != nil {
-			return state, false, err
-		}
-		setVLESSSNI(configuration, sni)
-	case "7":
-		privateKey, publicKey, shortID, err := newRealityKeyMaterial()
-		if err != nil {
-			return state, false, err
-		}
-		configuration.PrivateKey = privateKey
-		configuration.PublicKey = publicKey
-		configuration.ShortID = shortID
-		fmt.Fprintln(prompt.output, "Reality 密钥和 Short ID 已轮换；旧 Vless 节点会立即失效。")
-	case "8":
-		engine, err := selectRealityEngine(prompt)
-		if err != nil {
-			return state, false, err
-		}
-		if engine == configuration.Engine {
-			fmt.Fprintln(prompt.output, "已是该服务端内核，配置未改变。")
+		switch choice {
+		case "1":
+			showVLESSConfiguration(prompt.output, configuration)
+			continue
+		case "2":
+			configuration.Enabled = !configuration.Enabled
+		case "3":
+			port, err := promptPort(prompt, configuration.Port, state, "tcp")
+			if err != nil {
+				return state, false, err
+			}
+			configuration.Port = port
+		case "4":
+			uuid, err := randomUUID()
+			if err != nil {
+				return state, false, err
+			}
+			configuration.UUID = uuid
+		case "5":
+			state.Protocols.VLESSReality = nil
+		case "6":
+			sni, err := selectRealitySNI(ctx, prompt, stateDirectory)
+			if err != nil {
+				return state, false, err
+			}
+			setVLESSSNI(configuration, sni)
+		case "7":
+			privateKey, publicKey, shortID, err := newRealityKeyMaterial()
+			if err != nil {
+				return state, false, err
+			}
+			configuration.PrivateKey = privateKey
+			configuration.PublicKey = publicKey
+			configuration.ShortID = shortID
+			fmt.Fprintln(prompt.output, "Reality 密钥和 Short ID 已轮换；旧 Vless 节点会立即失效。")
+		case "8":
+			engine, err := selectRealityEngine(prompt)
+			if err != nil {
+				return state, false, err
+			}
+			if engine == configuration.Engine {
+				fmt.Fprintln(prompt.output, "已是该服务端内核，配置未改变。")
+				continue
+			}
+			configuration.Engine = engine
+		case "0":
 			return state, false, nil
+		default:
+			fmt.Fprintln(prompt.output, "无效选择。")
+			continue
 		}
-		configuration.Engine = engine
-	case "0":
-		return state, false, nil
-	default:
-		return state, false, fmt.Errorf("无效选择")
+		return state, true, nil
 	}
-	return state, true, nil
 }
 
 func selectRealityEngine(prompt *prompt) (model.RealityEngine, error) {
@@ -253,7 +256,7 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 	switch choice {
 	case "1":
 		showHysteria2Configuration(prompt.output, configuration, state.Certificates[configuration.CertificateID])
-		return state, false, nil
+		return editHysteria2(ctx, prompt, stateDirectory, state)
 	case "2":
 		configuration.Enabled = !configuration.Enabled
 	case "3":
@@ -330,7 +333,7 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 	switch choice {
 	case "1":
 		showAnyTLSConfiguration(prompt.output, configuration, state.Certificates[configuration.CertificateID])
-		return state, false, nil
+		return editAnyTLS(ctx, prompt, stateDirectory, state)
 	case "2":
 		configuration.Enabled = !configuration.Enabled
 	case "3":

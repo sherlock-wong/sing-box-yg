@@ -53,6 +53,26 @@ func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
 	}
 }
 
+func TestViewingVLESSConfigurationStaysInProtocolMenu(t *testing.T) {
+	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Protocols.VLESSReality = configuration
+	var output strings.Builder
+	_, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n1\n0\n0\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("viewing configuration changed state")
+	}
+	if strings.Count(output.String(), "1 查看当前配置") != 2 {
+		t.Fatalf("protocol menu was not shown again: %q", output.String())
+	}
+}
+
 func TestSelectRealitySNIUsesManualValue(t *testing.T) {
 	var output strings.Builder
 	value, err := selectRealitySNI(context.Background(), &prompt{scanner: bufio.NewScanner(strings.NewReader("1\nwww.cloudflare.com\n")), output: &output}, t.TempDir())
