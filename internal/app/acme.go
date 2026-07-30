@@ -171,8 +171,12 @@ case "$cd" in
 1 ) acme2 && acme3 && ACMEstandaloneDNScheck;;
 2 ) acme3 && ACMEDNScheck;;
 esac`)
-	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v4 ]]; then", "if [[ -n \"$v4\" && $domainIP =~ $v4 ]]; then")
-	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v6 ]]; then", "if [[ -n \"$v6\" && $domainIP =~ $v6 ]]; then")
+	// checkip has already validated the entered domain against the VPS. The
+	// upstream script then performs a second brittle equality comparison which
+	// can skip --issue entirely and fall through to --install-cert. Select one
+	// transport deterministically instead: IPv4 when available, IPv6 otherwise.
+	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v4 ]]; then", "if [[ -n \"$v4\" && -n \"$domainIP\" ]]; then")
+	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v6 ]]; then", "if [[ -z \"$v4\" && -n \"$v6\" && -n \"$domainIP\" ]]; then")
 	return os.WriteFile(scriptPath, []byte(configured), 0o700)
 }
 

@@ -104,7 +104,7 @@ if [[ $domainIP = $v6 ]]; then
 	if strings.Contains(content, "kill -9") || strings.Contains(content, "申请IP证书") || strings.Contains(content, "ACMEstandaloneIPcheck") {
 		t.Fatalf("unsafe upstream mode remains: %s", content)
 	}
-	if !strings.Contains(content, "VPNM 不会停止其他服务") || !strings.Contains(content, "$domainIP =~ $v4") {
+	if !strings.Contains(content, "VPNM 不会停止其他服务") || !strings.Contains(content, "-n \"$domainIP\"") || !strings.Contains(content, "-z \"$v4\"") {
 		t.Fatalf("safe changes missing: %s", content)
 	}
 }
