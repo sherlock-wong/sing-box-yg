@@ -101,6 +101,9 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
 		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
 	}
+	if err := ensureACMECloudflareHook(ctx, adapter.Client, locks, clientDirectory); err != nil {
+		return certificate.Info{}, err
+	}
 	home := filepath.Join(clientDirectory, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return certificate.Info{}, err
@@ -211,6 +214,9 @@ func (adapter ACMEAdapter) Renew(ctx context.Context, stateDirectory string) err
 	} else if err != nil {
 		return err
 	}
+	if err := ensureACMECloudflareHook(ctx, adapter.Client, locks, clientDirectory); err != nil {
+		return err
+	}
 	home := filepath.Join(clientDirectory, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
@@ -221,6 +227,20 @@ func (adapter ACMEAdapter) Renew(ctx context.Context, stateDirectory string) err
 	}
 	if _, err := runner.Run(ctx, platform.Command{Path: "bash", Args: []string{script, "--home", home, "--config-home", home, "--cert-home", home, "--cron"}, Timeout: 10 * time.Minute}); err != nil {
 		return fmt.Errorf("renew ACME certificates: %w", err)
+	}
+	return nil
+}
+
+func ensureACMECloudflareHook(ctx context.Context, client *http.Client, locks dependency.Locks, clientDirectory string) error {
+	if locks.ACMECloudflare.Commit == "" {
+		return fmt.Errorf("ACME Cloudflare DNS hook is not locked")
+	}
+	directory := filepath.Join(clientDirectory, "dnsapi")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	if err := platform.DownloadVerified(ctx, client, platform.Download{URL: locks.ACMECloudflare.URL, SHA256: locks.ACMECloudflare.SHA256, Mode: 0o700}, filepath.Join(directory, "dns_cf.sh")); err != nil {
+		return fmt.Errorf("download locked ACME Cloudflare DNS hook: %w", err)
 	}
 	return nil
 }

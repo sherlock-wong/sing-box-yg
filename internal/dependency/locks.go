@@ -14,10 +14,11 @@ import (
 )
 
 type Locks struct {
-	SingBox Core   `json:"sing_box"`
-	Xray    Core   `json:"xray"`
-	Realm   Core   `json:"realm"`
-	ACME    Script `json:"acme"`
+	SingBox        Core   `json:"sing_box"`
+	Xray           Core   `json:"xray"`
+	Realm          Core   `json:"realm"`
+	ACME           Script `json:"acme"`
+	ACMECloudflare Script `json:"acme_cloudflare"`
 }
 type Script struct {
 	Commit string `json:"commit"`
@@ -70,6 +71,14 @@ func (locks Locks) Validate() error {
 		}
 		if err := locks.ACME.validate(); err != nil {
 			return fmt.Errorf("acme: %w", err)
+		}
+	}
+	if locks.ACMECloudflare.Commit != "" {
+		if !commitPattern.MatchString(locks.ACMECloudflare.Commit) {
+			return fmt.Errorf("acme Cloudflare lock has invalid commit")
+		}
+		if err := locks.ACMECloudflare.validate(); err != nil {
+			return fmt.Errorf("acme Cloudflare: %w", err)
 		}
 	}
 	return nil
