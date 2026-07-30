@@ -21,7 +21,7 @@ func TestAddPinnedCertificateCreatesProtectedKeyAndCandidateState(t *testing.T) 
 	if certificate.Mode != model.CertificateModePinned || certificate.DER_SHA256 == "" {
 		t.Fatalf("certificate = %+v", certificate)
 	}
-	info, err := os.Stat(filepath.Join(directory, "certificates", "default", "privkey.pem"))
+	info, err := os.Stat(filepath.Join(directory, "certs", "default", "privkey.pem"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("key mode = %v, err = %v", info.Mode(), err)
 	}

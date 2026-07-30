@@ -34,7 +34,7 @@ func StagePinnedCertificate(ctx context.Context, stateDirectory string, state mo
 	if err != nil {
 		return model.State{}, nil, err
 	}
-	directory := filepath.Join(stateDirectory, "certificates", id)
+	directory := filepath.Join(stateDirectory, "certs", id)
 	certPath, keyPath := filepath.Join(directory, "fullchain.pem"), filepath.Join(directory, "privkey.pem")
 	candidate := model.NewSnapshot(state).Snapshot()
 	if candidate.Certificates == nil {
@@ -78,7 +78,7 @@ func StageImportedCertificate(ctx context.Context, stateDirectory string, state 
 	if err != nil {
 		return model.State{}, nil, fmt.Errorf("validate imported certificate: %w", err)
 	}
-	directory := filepath.Join(stateDirectory, "certificates", id)
+	directory := filepath.Join(stateDirectory, "certs", id)
 	certPath, keyPath := filepath.Join(directory, "fullchain.pem"), filepath.Join(directory, "privkey.pem")
 	candidate := model.NewSnapshot(state).Snapshot()
 	if candidate.Certificates == nil {

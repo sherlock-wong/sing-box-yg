@@ -426,7 +426,7 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	if keyPath == "" {
 		keyPath = "/root/ygkkkca/private.key"
 	}
-	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入到 /etc/vps-net-manager/certificates/<证书ID>/fullchain.pem 和 privkey.pem。")
+	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入到 /etc/vps-net-manager/certs/<证书ID>/fullchain.pem 和 privkey.pem。")
 	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return
