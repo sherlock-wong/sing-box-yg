@@ -545,14 +545,7 @@ func install(arguments []string) {
 	if _, err := app.Bootstrap(context.Background(), *stateDirectory, *unitDirectory, nil); err != nil {
 		fatalIf(err)
 	}
-	previous, err := app.LoadState(statePath)
-	fatalIf(err)
-	candidate, err := ui.InitialSetup(context.Background(), os.Stdin, os.Stdout, *stateDirectory, previous)
-	fatalIf(err)
-	if _, err := app.DefaultApplyOptions(*stateDirectory, &previous).Apply(context.Background(), candidate); err != nil {
-		fatalIf(err)
-	}
-	fmt.Println("安装完成。之后运行 vm 管理节点。")
+	fmt.Println("安装完成。当前未添加协议；请稍后运行 vm 管理节点。")
 }
 
 func apply(arguments []string) {
@@ -803,10 +796,20 @@ func fatalIf(err error) {
 	if err == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "vpnm:", err)
+	fmt.Fprintln(os.Stderr, "vm:", err)
 	os.Exit(1)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vm install | vm apply | vm update | vm uninstall --yes | vm cert <sync|acme> | vm bbr <status|enable|restore> | vm realm <install|validate|apply> | vm reality scan | vm state validate | vm version")
+	fmt.Fprintln(os.Stderr, `用法：
+  vm install
+  vm apply
+  vm update
+  vm uninstall --yes
+  vm cert <sync|acme>
+  vm bbr <status|enable|restore>
+  vm realm <install|validate|apply>
+  vm reality scan
+  vm state validate
+  vm version`)
 }
