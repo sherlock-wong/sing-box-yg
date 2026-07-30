@@ -53,3 +53,20 @@ func TestLoadStateAcceptsEmptySchemaOneState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadStateRejectsLegacyCertificateDirectory(t *testing.T) {
+	directory := t.TempDir()
+	state := model.NewState()
+	state.Certificates["demo"] = model.Certificate{Name: "demo", Cert: filepath.Join(directory, "certificates", "demo", "fullchain.pem"), Key: filepath.Join(directory, "certificates", "demo", "privkey.pem"), Mode: model.CertificateModePinned}
+	contents, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "state.json")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(path); err == nil {
+		t.Fatal("LoadState accepted a legacy certificate directory")
+	}
+}

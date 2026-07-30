@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
 )
@@ -33,5 +34,23 @@ func LoadState(path string) (model.State, error) {
 	if err := state.Validate(); err != nil {
 		return model.State{}, fmt.Errorf("validate state: %w", err)
 	}
+	if err := validateManagedCertificatePaths(state, filepath.Dir(path)); err != nil {
+		return model.State{}, err
+	}
 	return state, nil
+}
+
+// validateManagedCertificatePaths intentionally accepts only the current
+// project-owned layout. Certificate source paths can point outside the state
+// directory, but the files consumed by services must be private copies under
+// certs/<id>/; old layouts are rejected rather than silently supported.
+func validateManagedCertificatePaths(state model.State, stateDirectory string) error {
+	for id, item := range state.Certificates {
+		expectedCert := filepath.Join(stateDirectory, "certs", id, "fullchain.pem")
+		expectedKey := filepath.Join(stateDirectory, "certs", id, "privkey.pem")
+		if filepath.Clean(item.Cert) != expectedCert || filepath.Clean(item.Key) != expectedKey {
+			return fmt.Errorf("certificate %s uses an unsupported path; expected %s and %s", id, expectedCert, expectedKey)
+		}
+	}
+	return nil
 }
