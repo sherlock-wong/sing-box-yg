@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/sherlock-wong/vps-net-manager/internal/app"
@@ -88,6 +89,7 @@ func menu() {
 		fmt.Println("  4. Realm 端口转发")
 		fmt.Println("  5. BBR 管理")
 		fmt.Println("  6. 显示分享链接和二维码")
+		fmt.Println("  7. 修改分享链接对外地址")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -160,12 +162,36 @@ func menu() {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 				continue
 			}
+			if !links.AddressAvailable {
+				fmt.Println("尚未设置分享链接对外地址；请先选择 7 填写域名、IPv4 或 IPv6。")
+				continue
+			}
 			if len(links.Links) == 0 {
-				fmt.Println("没有已启用协议，因此没有分享链接。")
+				fmt.Println("当前没有可导出的已启用协议。")
 				continue
 			}
 			if err := ui.PrintShareLinks(os.Stdout, links.Links); err != nil {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
+			}
+		case "7":
+			if os.Geteuid() != 0 {
+				fmt.Fprintln(os.Stderr, "vpnm: 修改对外地址必须以 root 运行")
+				continue
+			}
+			fmt.Print("对外地址（域名、IPv4 或 IPv6；输入 0 取消）：")
+			if !scanner.Scan() {
+				return
+			}
+			address := strings.TrimSpace(scanner.Text())
+			if address == "0" {
+				continue
+			}
+			candidate := state
+			candidate.PublicAddress = address
+			if _, err := app.DefaultApplyOptions(stateDirectory, &state).Apply(context.Background(), candidate); err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+			} else {
+				fmt.Println("分享链接对外地址已更新。")
 			}
 		case "0":
 			return
