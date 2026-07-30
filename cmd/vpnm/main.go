@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -408,9 +409,18 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	if id == "" {
 		id = strings.ReplaceAll(domain, ".", "-")
 	}
-	if _, exists := state.Certificates[id]; exists {
-		fmt.Println("该证书 ID 已存在；请返回后用“导入已有证书和私钥”更新或另选 ID。")
-		return
+	_, registered := state.Certificates[id]
+	targetDirectory := filepath.Join(stateDirectory, "certs", id)
+	_, certificateExists := os.Stat(filepath.Join(targetDirectory, "fullchain.pem"))
+	_, keyExists := os.Stat(filepath.Join(targetDirectory, "privkey.pem"))
+	overwrite := registered || certificateExists == nil || keyExists == nil
+	if overwrite {
+		fmt.Printf("检测到证书 ID 或保存路径已存在：%s\n", targetDirectory)
+		choice, ok := promptMenuValue(scanner, "1 覆盖现有证书  0 取消：")
+		if !ok || choice != "1" {
+			fmt.Println("已取消，不会覆盖现有证书。")
+			return
+		}
 	}
 	certificatePath, ok := promptMenuValue(scanner, "ACME 脚本临时证书路径（回车使用 /root/ygkkkca/cert.crt）：")
 	if !ok {
@@ -431,7 +441,14 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return
 	}
-	candidate, artifacts, err := app.StageImportedCertificate(context.Background(), stateDirectory, state, id, domain, certificatePath, keyPath, model.CertificateModeTrusted, true, time.Now())
+	var candidate model.State
+	var artifacts []app.Artifact
+	var err error
+	if registered {
+		candidate, artifacts, err = app.StageReplacementCertificate(context.Background(), stateDirectory, state, id, certificatePath, keyPath, time.Now())
+	} else {
+		candidate, artifacts, err = app.StageImportedCertificate(context.Background(), stateDirectory, state, id, domain, certificatePath, keyPath, model.CertificateModeTrusted, true, time.Now())
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return

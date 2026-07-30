@@ -55,3 +55,28 @@ func TestStageImportedCertificateKeepsSourceAndDefersWrites(t *testing.T) {
 		t.Fatalf("staged certificate was written before Apply: %v", err)
 	}
 }
+
+func TestStageReplacementCertificatePreservesCertificateID(t *testing.T) {
+	directory := t.TempDir()
+	certificatePEM, keyPEM, _, err := certificate.CreatePinned("node.example.com", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCert, sourceKey := filepath.Join(directory, "renewed-cert.pem"), filepath.Join(directory, "renewed-key.pem")
+	if err := os.WriteFile(sourceCert, certificatePEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourceKey, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Certificates["demo"] = model.Certificate{Name: "original name", Cert: filepath.Join(directory, "certs", "demo", "fullchain.pem"), Key: filepath.Join(directory, "certs", "demo", "privkey.pem"), Mode: model.CertificateModeTrusted}
+	candidate, artifacts, err := StageReplacementCertificate(context.Background(), directory, state, "demo", sourceCert, sourceKey, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := candidate.Certificates["demo"]
+	if item.Name != "original name" || item.SourceCert != sourceCert || len(artifacts) != 2 {
+		t.Fatalf("certificate = %+v, artifacts = %d", item, len(artifacts))
+	}
+}

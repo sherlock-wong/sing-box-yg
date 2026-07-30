@@ -51,6 +51,20 @@ func StagePinnedCertificate(ctx context.Context, stateDirectory string, state mo
 // private manager-owned copy. When followSource is true, later cert sync
 // checks the original paths before replacing the managed copy.
 func StageImportedCertificate(ctx context.Context, stateDirectory string, state model.State, id, name, sourceCert, sourceKey string, mode model.CertificateMode, followSource bool, now time.Time) (model.State, []Artifact, error) {
+	return stageImportedCertificate(ctx, stateDirectory, state, id, name, sourceCert, sourceKey, mode, followSource, false, now)
+}
+
+// StageReplacementCertificate stages a confirmed replacement of an existing
+// manager-owned certificate while preserving protocol bindings to its ID.
+func StageReplacementCertificate(ctx context.Context, stateDirectory string, state model.State, id, sourceCert, sourceKey string, now time.Time) (model.State, []Artifact, error) {
+	item, exists := state.Certificates[id]
+	if !exists {
+		return model.State{}, nil, fmt.Errorf("certificate ID does not exist")
+	}
+	return stageImportedCertificate(ctx, stateDirectory, state, id, item.Name, sourceCert, sourceKey, model.CertificateModeTrusted, true, true, now)
+}
+
+func stageImportedCertificate(ctx context.Context, stateDirectory string, state model.State, id, name, sourceCert, sourceKey string, mode model.CertificateMode, followSource, replaceExisting bool, now time.Time) (model.State, []Artifact, error) {
 	if err := ctx.Err(); err != nil {
 		return model.State{}, nil, err
 	}
@@ -63,7 +77,7 @@ func StageImportedCertificate(ctx context.Context, stateDirectory string, state 
 	if mode != model.CertificateModePinned && mode != model.CertificateModeTrusted {
 		return model.State{}, nil, fmt.Errorf("invalid certificate mode")
 	}
-	if _, exists := state.Certificates[id]; exists {
+	if _, exists := state.Certificates[id]; exists && !replaceExisting {
 		return model.State{}, nil, fmt.Errorf("certificate ID already exists")
 	}
 	certificatePEM, err := os.ReadFile(sourceCert)
