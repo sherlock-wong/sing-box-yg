@@ -519,7 +519,7 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	}
 	certificatePath := filepath.Join(acmeDirectory, "fullchain.pem")
 	keyPath := filepath.Join(acmeDirectory, "privkey.pem")
-	fmt.Printf("即将启动 ACME 域名证书流程；证书临时输出到 %s，完成后会验证并归档到 %s。下一层只支持：1 独立 80 端口域名验证，或 2 DNS API 验证；不会停止其他服务。\n", acmeDirectory, targetDirectory)
+	fmt.Printf("即将启动官方 acme.sh 域名证书流程；证书临时输出到 %s，完成后会验证并归档到 %s。下一层可选 Cloudflare DNS API（推荐）或独立 80 端口验证；不会停止其他服务。\n", acmeDirectory, targetDirectory)
 	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return
@@ -659,6 +659,7 @@ func update(arguments []string) {
 	fatalIf(err)
 	result, err := (app.Updater{StateDirectory: *stateDirectory, BinaryPath: *binaryPath}).Update(context.Background(), sourceCommit, state)
 	fatalIf(err)
+	fatalIf(app.InstallCertificateTimer(context.Background(), "/etc/systemd/system", nil))
 	if !result.Updated {
 		fmt.Printf("已是最新成功构建（%s）。\n", shortCommit(result.SourceCommit))
 		return
@@ -785,6 +786,10 @@ func certCommand(arguments []string) {
 		certACME(arguments[1:])
 		return
 	}
+	if arguments[0] == "renew" {
+		certRenew(arguments[1:])
+		return
+	}
 	if arguments[0] != "sync" {
 		usage()
 		os.Exit(2)
@@ -805,6 +810,30 @@ func certCommand(arguments []string) {
 			fmt.Println("证书已同步并重新应用配置。")
 		} else {
 			fmt.Println("没有配置可同步的证书。")
+		}
+	}
+}
+
+func certRenew(arguments []string) {
+	flags := flag.NewFlagSet("cert renew", flag.ExitOnError)
+	stateDirectory := flags.String("state-dir", "/etc/vps-net-manager", "VPNM state directory")
+	quiet := flags.Bool("quiet", false, "suppress success output")
+	flags.Parse(arguments)
+	if os.Geteuid() != 0 {
+		fatalIf(fmt.Errorf("cert renew 必须以 root 运行"))
+	}
+	if err := (app.ACMEAdapter{}).Renew(context.Background(), *stateDirectory); err != nil {
+		fatalIf(err)
+	}
+	state, err := app.LoadState(*stateDirectory + "/state.json")
+	fatalIf(err)
+	changed, err := app.SyncCertificates(context.Background(), state, time.Now(), app.DefaultApplyOptions(*stateDirectory, &state))
+	fatalIf(err)
+	if !*quiet {
+		if changed {
+			fmt.Println("ACME 已续期并同步证书。")
+		} else {
+			fmt.Println("ACME 已检查；当前无需同步证书。")
 		}
 	}
 }
@@ -889,7 +918,7 @@ func usage() {
   vm apply
   vm update
   vm uninstall --yes
-  vm cert <sync|acme>
+  vm cert <sync|renew|acme>
   vm bbr <status|enable|restore>
   vm realm <install|validate|apply>
   vm reality scan

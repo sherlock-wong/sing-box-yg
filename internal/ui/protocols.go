@@ -511,7 +511,7 @@ func issueACMECertificate(ctx context.Context, prompt *prompt, stateDirectory st
 	if !overwrite {
 		return state, "", false, nil
 	}
-	fmt.Fprintf(prompt.output, "即将启动 ACME 域名证书流程；证书临时输出到 %s，成功后归档到证书管理。下一层只支持：1 独立 80 端口域名验证，或 2 DNS API 验证；不会停止其他服务。\n", filepath.Dir(certificatePath))
+	fmt.Fprintf(prompt.output, "即将启动官方 acme.sh 域名证书流程；证书临时输出到 %s，成功后归档到证书管理。下一层可选 Cloudflare DNS API（推荐）或独立 80 端口验证；不会停止其他服务。\n", filepath.Dir(certificatePath))
 	candidate, err := app.AddInteractiveACMECertificate(ctx, stateDirectory, state, id, domain, certificatePath, keyPath, domain, time.Now())
 	if err != nil {
 		return state, "", false, err

@@ -77,7 +77,7 @@ func TestInstallCertificateTimerUsesNonInteractiveCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := os.ReadFile(filepath.Join(units, DefaultCertSyncService))
-	if err != nil || !strings.Contains(string(service), "ExecStart=/usr/local/bin/vm cert sync --quiet") {
+	if err != nil || !strings.Contains(string(service), "ExecStart=/usr/local/bin/vm cert renew --quiet") {
 		t.Fatalf("service = %q, err = %v", service, err)
 	}
 	if got, want := commands, []string{"daemon-reload", "enable --now " + DefaultCertSyncTimer}; !reflect.DeepEqual(got, want) {

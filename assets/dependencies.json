@@ -51,8 +51,8 @@
     }
   },
   "acme": {
-    "commit": "8ffa90d950ec9562248b8712634b335e8684e01b",
-    "url": "https://raw.githubusercontent.com/yonggekkk/acme-yg/8ffa90d950ec9562248b8712634b335e8684e01b/acme.sh",
-    "sha256": "5e43b5eea48987574730cecf77b5de483d4d7ec6e1e5f242b80f1321863f0521"
+    "commit": "2feb392bd0e3964d9bf68871ae804578d9d5ca80",
+    "url": "https://raw.githubusercontent.com/acmesh-official/acme.sh/2feb392bd0e3964d9bf68871ae804578d9d5ca80/acme.sh",
+    "sha256": "667b963960470aa8d1e8a1f34ebf084cda1ffd66a3cb5125a4129de6a855528f"
   }
 }

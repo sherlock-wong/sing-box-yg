@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -48,9 +49,6 @@ func (adapter ACMEAdapter) Run(ctx context.Context, arguments []string, certific
 	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
 		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
 	}
-	if err := configureACMEOutputPaths(script, certificatePath, keyPath); err != nil {
-		return certificate.Info{}, fmt.Errorf("configure ACME output paths: %w", err)
-	}
 	runner := adapter.Runner
 	if runner == nil {
 		runner = platform.SystemRunner{}
@@ -73,10 +71,9 @@ func (adapter ACMEAdapter) Run(ctx context.Context, arguments []string, certific
 	return info, nil
 }
 
-// RunInteractive starts the locked ACME script with the administrator's
-// terminal attached, then independently verifies the requested output pair.
-// It is intentionally separate from Run so non-interactive systemd work can
-// never unexpectedly request terminal input.
+// RunInteractive uses the official, lockfile-pinned acme.sh client. Its
+// prompts are deliberately limited to domain validation methods supported by
+// VPNM; no unrelated installer menu or IP-certificate flow is exposed.
 func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, keyPath, hostname string, now time.Time) (certificate.Info, error) {
 	if certificatePath == "" || keyPath == "" || hostname == "" {
 		return certificate.Info{}, fmt.Errorf("certificate path, key path, and hostname are required")
@@ -92,20 +89,65 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	if err := locks.Validate(); err != nil {
 		return certificate.Info{}, err
 	}
-	stage, err := os.MkdirTemp("", "vpnm-acme-")
+	stateDirectory, err := acmeStateDirectory(certificatePath)
 	if err != nil {
 		return certificate.Info{}, err
 	}
-	defer os.RemoveAll(stage)
-	script := filepath.Join(stage, "acme.sh")
+	clientDirectory := filepath.Join(stateDirectory, "acme-client")
+	if err := os.MkdirAll(clientDirectory, 0o700); err != nil {
+		return certificate.Info{}, err
+	}
+	script := filepath.Join(clientDirectory, "acme.sh")
 	if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
 		return certificate.Info{}, fmt.Errorf("download locked ACME script: %w", err)
 	}
-	if err := configureACMEOutputPaths(script, certificatePath, keyPath); err != nil {
-		return certificate.Info{}, fmt.Errorf("configure ACME output paths: %w", err)
+	home := filepath.Join(clientDirectory, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return certificate.Info{}, err
 	}
-	if err := platform.RunAttached(ctx, platform.Command{Path: "bash", Args: []string{script}, Timeout: 10 * time.Minute}); err != nil {
-		return certificate.Info{}, fmt.Errorf("run ACME script: %w", err)
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprint(os.Stdout, "验证方式：1 Cloudflare DNS API（推荐）  2 HTTP-01 独立 80 端口  0 取消：")
+	method, err := readACMEInput(reader)
+	if err != nil || method == "0" || method == "" {
+		return certificate.Info{}, fmt.Errorf("ACME 申请已取消")
+	}
+	fmt.Fprint(os.Stdout, "ACME 注册邮箱：")
+	email, err := readACMEInput(reader)
+	if err != nil || email == "" {
+		return certificate.Info{}, fmt.Errorf("ACME 注册邮箱不能为空")
+	}
+	base := []string{script, "--home", home, "--config-home", home, "--cert-home", home}
+	if result, err := platform.Run(ctx, platform.Command{Path: "bash", Args: append(append([]string{}, base...), "--register-account", "-m", email, "--server", "letsencrypt"), Timeout: 3 * time.Minute}); err != nil {
+		return certificate.Info{}, fmt.Errorf("register ACME account: %s: %w", strings.TrimSpace(result.Output), err)
+	}
+	issue := append(append([]string{}, base...), "--issue", "-d", hostname, "--ecc", "--server", "letsencrypt")
+	command := platform.Command{Path: "bash", Args: issue, Timeout: 10 * time.Minute}
+	switch method {
+	case "1":
+		fmt.Fprint(os.Stdout, "Cloudflare Account ID：")
+		accountID, err := readACMEInput(reader)
+		if err != nil || accountID == "" {
+			return certificate.Info{}, fmt.Errorf("Cloudflare Account ID 不能为空")
+		}
+		fmt.Fprint(os.Stdout, "Cloudflare DNS API Token：")
+		token, err := readACMEInput(reader)
+		if err != nil || token == "" {
+			return certificate.Info{}, fmt.Errorf("Cloudflare DNS API Token 不能为空")
+		}
+		command.Args = append(command.Args, "--dns", "dns_cf")
+		command.Env = []string{"CF_Account_ID=" + accountID, "CF_Token=" + token}
+		command.Redact = []string{token}
+	case "2":
+		command.Args = append(command.Args, "--standalone")
+	default:
+		return certificate.Info{}, fmt.Errorf("无效验证方式")
+	}
+	if result, err := platform.Run(ctx, command); err != nil {
+		return certificate.Info{}, fmt.Errorf("issue ACME certificate: %s: %w", strings.TrimSpace(result.Output), err)
+	}
+	install := append(append([]string{}, base...), "--install-cert", "-d", hostname, "--ecc", "--key-file", keyPath, "--fullchain-file", certificatePath)
+	if result, err := platform.Run(ctx, platform.Command{Path: "bash", Args: install, Timeout: 3 * time.Minute}); err != nil {
+		return certificate.Info{}, fmt.Errorf("install ACME certificate: %s: %w", strings.TrimSpace(result.Output), err)
 	}
 	certificatePEM, err := os.ReadFile(certificatePath)
 	if err != nil {
@@ -122,62 +164,61 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	return info, nil
 }
 
-// configureACMEOutputPaths keeps the verified upstream script but rewrites its
-// fixed legacy output location before execution. The certificate is therefore
-// never written under /root and remains within the manager's state directory.
-func configureACMEOutputPaths(scriptPath, certificatePath, keyPath string) error {
-	certificateDirectory := filepath.Dir(certificatePath)
-	if err := os.MkdirAll(certificateDirectory, 0o700); err != nil {
+func acmeStateDirectory(certificatePath string) (string, error) {
+	directory := filepath.Clean(filepath.Dir(certificatePath))
+	if filepath.Base(filepath.Dir(directory)) != "acme" {
+		return "", fmt.Errorf("ACME certificate path must be under an acme directory")
+	}
+	return filepath.Dir(filepath.Dir(directory)), nil
+}
+
+func readACMEInput(reader *bufio.Reader) (string, error) {
+	value, err := reader.ReadString('\n')
+	if err != nil && len(value) == 0 {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
+// Renew runs acme.sh's non-interactive renewal pass. Certificate deployment
+// paths were registered during issuance; callers should sync the resulting
+// managed source files afterwards.
+func (adapter ACMEAdapter) Renew(ctx context.Context, stateDirectory string) error {
+	locks := adapter.Locks
+	if locks.ACME.Commit == "" {
+		var err error
+		locks, err = dependency.Embedded()
+		if err != nil {
+			return err
+		}
+	}
+	if err := locks.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+	clientDirectory := filepath.Join(stateDirectory, "acme-client")
+	if err := os.MkdirAll(clientDirectory, 0o700); err != nil {
 		return err
 	}
-	script, err := os.ReadFile(scriptPath)
-	if err != nil {
+	script := filepath.Join(clientDirectory, "acme.sh")
+	if _, err := os.Stat(script); os.IsNotExist(err) {
+		if err := platform.DownloadVerified(ctx, adapter.Client, platform.Download{URL: locks.ACME.URL, SHA256: locks.ACME.SHA256, Mode: 0o700}, script); err != nil {
+			return fmt.Errorf("download locked ACME script: %w", err)
+		}
+	} else if err != nil {
 		return err
 	}
-	configured := strings.ReplaceAll(string(script), "/root/ygkkkca/cert.crt", certificatePath)
-	configured = strings.ReplaceAll(configured, "/root/ygkkkca/private.key", keyPath)
-	configured = strings.ReplaceAll(configured, "/root/ygkkkca", certificateDirectory)
-	configured = strings.ReplaceAll(configured, "case \"$cd\" in \n", "case \"$cd\" in\n")
-	// The pinned upstream helper presents an IP certificate path and kills every
-	// process on port 80 before HTTP validation. Neither behavior belongs in
-	// VPNM: only DNS-name certificates are supported, and unrelated services
-	// must never be stopped by certificate setup.
-	configured = strings.ReplaceAll(configured, `acme2(){
-if [[ -n $(lsof -i :80|grep -v "PID") ]]; then
-yellow "检测到80端口被占用，现执行80端口全释放"
-sleep 2
-lsof -i :80|grep -v "PID"|awk '{print "kill -9",$2}'|sh >/dev/null 2>&1
-green "80端口全释放完毕！"
-sleep 2
-fi
-}`, `acme2(){
-if [[ -n $(lsof -i :80|grep -v "PID") ]]; then
-red "80 端口已被占用；VPNM 不会停止其他服务。请改用 DNS API 验证，或自行暂停占用 80 端口的服务后重试。"
-return 1
-fi
-}`)
-	configured = strings.ReplaceAll(configured, `ab="1.选择独立80端口模式申请IP证书（无需域名，小白推荐）\n2.选择独立80端口模式申请域名证书（需域名）\n3.选择DNS API模式申请证书（需域名、ID、Key），自动识别单域名与泛域名\n 请选择："
-readp "$ab" cd
-case "$cd" in
-1 ) acme2 && acme3 && ACMEstandaloneIPcheck;;
-2 ) acme2 && acme3 && ACMEstandaloneDNScheck;;
-3 ) acme3 && ACMEDNScheck;;
-esac`, `ab="1.选择独立80端口模式申请域名证书（需域名）\n2.选择DNS API模式申请证书（需域名、ID、Key），自动识别单域名与泛域名\n 请选择："
-readp "$ab" cd
-case "$cd" in
-1 ) acme2 && acme3 && ACMEstandaloneDNScheck;;
-2 ) acme3 && ACMEDNScheck;;
-esac`)
-	// checkip has already validated the entered domain against the VPS. The
-	// upstream script then performs a second brittle equality comparison which
-	// can skip --issue entirely and fall through to --install-cert. Select one
-	// transport deterministically instead: IPv4 when available, IPv6 otherwise.
-	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v4 ]]; then", "if [[ -n \"$v4\" && -n \"$domainIP\" ]]; then")
-	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v6 ]]; then", "if [[ -z \"$v4\" && -n \"$v6\" && -n \"$domainIP\" ]]; then")
-	return os.WriteFile(scriptPath, []byte(configured), 0o700)
+	home := filepath.Join(clientDirectory, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	runner := adapter.Runner
+	if runner == nil {
+		runner = platform.SystemRunner{}
+	}
+	if _, err := runner.Run(ctx, platform.Command{Path: "bash", Args: []string{script, "--home", home, "--config-home", home, "--cert-home", home, "--cron"}, Timeout: 10 * time.Minute}); err != nil {
+		return fmt.Errorf("renew ACME certificates: %w", err)
+	}
+	return nil
 }
 
 // AddInteractiveACMECertificate runs the locked ACME flow and persists the
