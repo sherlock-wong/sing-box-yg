@@ -140,6 +140,39 @@ func configureACMEOutputPaths(scriptPath, certificatePath, keyPath string) error
 	configured := strings.ReplaceAll(string(script), "/root/ygkkkca/cert.crt", certificatePath)
 	configured = strings.ReplaceAll(configured, "/root/ygkkkca/private.key", keyPath)
 	configured = strings.ReplaceAll(configured, "/root/ygkkkca", certificateDirectory)
+	configured = strings.ReplaceAll(configured, "case \"$cd\" in \n", "case \"$cd\" in\n")
+	// The pinned upstream helper presents an IP certificate path and kills every
+	// process on port 80 before HTTP validation. Neither behavior belongs in
+	// VPNM: only DNS-name certificates are supported, and unrelated services
+	// must never be stopped by certificate setup.
+	configured = strings.ReplaceAll(configured, `acme2(){
+if [[ -n $(lsof -i :80|grep -v "PID") ]]; then
+yellow "检测到80端口被占用，现执行80端口全释放"
+sleep 2
+lsof -i :80|grep -v "PID"|awk '{print "kill -9",$2}'|sh >/dev/null 2>&1
+green "80端口全释放完毕！"
+sleep 2
+fi
+}`, `acme2(){
+if [[ -n $(lsof -i :80|grep -v "PID") ]]; then
+red "80 端口已被占用；VPNM 不会停止其他服务。请改用 DNS API 验证，或自行暂停占用 80 端口的服务后重试。"
+return 1
+fi
+}`)
+	configured = strings.ReplaceAll(configured, `ab="1.选择独立80端口模式申请IP证书（无需域名，小白推荐）\n2.选择独立80端口模式申请域名证书（需域名）\n3.选择DNS API模式申请证书（需域名、ID、Key），自动识别单域名与泛域名\n 请选择："
+readp "$ab" cd
+case "$cd" in
+1 ) acme2 && acme3 && ACMEstandaloneIPcheck;;
+2 ) acme2 && acme3 && ACMEstandaloneDNScheck;;
+3 ) acme3 && ACMEDNScheck;;
+esac`, `ab="1.选择独立80端口模式申请域名证书（需域名）\n2.选择DNS API模式申请证书（需域名、ID、Key），自动识别单域名与泛域名\n 请选择："
+readp "$ab" cd
+case "$cd" in
+1 ) acme2 && acme3 && ACMEstandaloneDNScheck;;
+2 ) acme3 && ACMEDNScheck;;
+esac`)
+	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v4 ]]; then", "if [[ -n \"$v4\" && $domainIP =~ $v4 ]]; then")
+	configured = strings.ReplaceAll(configured, "if [[ $domainIP = $v6 ]]; then", "if [[ -n \"$v6\" && $domainIP =~ $v6 ]]; then")
 	return os.WriteFile(scriptPath, []byte(configured), 0o700)
 }
 

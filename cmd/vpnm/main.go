@@ -519,7 +519,7 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 	}
 	certificatePath := filepath.Join(acmeDirectory, "fullchain.pem")
 	keyPath := filepath.Join(acmeDirectory, "privkey.pem")
-	fmt.Printf("即将启动 ACME 交互流程；证书临时输出到 %s，完成后会验证并归档到 %s。\n", acmeDirectory, targetDirectory)
+	fmt.Printf("即将启动 ACME 域名证书流程；证书临时输出到 %s，完成后会验证并归档到 %s。下一层只支持：1 独立 80 端口域名验证，或 2 DNS API 验证；不会停止其他服务。\n", acmeDirectory, targetDirectory)
 	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return
