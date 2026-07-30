@@ -40,7 +40,7 @@ func InstallCertificateTimer(ctx context.Context, unitDirectory string, runner p
 }
 
 func certSyncServiceUnit() string {
-	return "[Unit]\nDescription=VPS Net Manager certificate synchronization\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/vpnm cert sync --quiet\n"
+	return "[Unit]\nDescription=VPS Net Manager certificate synchronization\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/vm cert sync --quiet\n"
 }
 
 func certSyncTimerUnit() string {

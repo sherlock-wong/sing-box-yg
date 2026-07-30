@@ -3,10 +3,10 @@ set -euo pipefail
 
 repo='sherlock-wong/vps-net-manager'
 state_dir='/etc/vps-net-manager'
-target='/usr/local/bin/vpnm'
+target='/usr/local/bin/vm'
 
 fail() {
-  printf 'vpnm 安装失败：%s\n' "$*" >&2
+  printf 'vm 安装失败：%s\n' "$*" >&2
   exit 1
 }
 
@@ -42,7 +42,7 @@ sha256_file() {
 
 reject_legacy_install() {
   [ ! -e "$state_dir/protocols.json" ] || fail '检测到旧版 Bash 状态；请先在旧 vpnm 菜单执行卸载。'
-  if [ -x "$target" ] && head -n 1 "$target" 2>/dev/null | grep -Eq '^#!.*(ba)?sh'; then
+  if [ -x /usr/local/bin/vpnm ] && head -n 1 /usr/local/bin/vpnm 2>/dev/null | grep -Eq '^#!.*(ba)?sh'; then
     fail '检测到旧版 Bash vpnm；请先在旧 vpnm 菜单执行卸载。'
   fi
 }
@@ -73,16 +73,20 @@ main() {
   download "$base/checksums.txt" "$temp/checksums.txt" || fail '下载 checksums 失败。'
   expected=$(awk -v name="$binary" '$2==name {print $1}' "$temp/checksums.txt")
   [ "${#expected}" -eq 64 ] || fail 'checksums 中缺少当前架构二进制。'
-  download "$base/$binary" "$temp/$binary" || fail '下载 vpnm 二进制失败。'
+  download "$base/$binary" "$temp/$binary" || fail '下载 vm 二进制失败。'
   actual=$(sha256_file "$temp/$binary")
-  [ "$actual" = "$expected" ] || fail 'vpnm 二进制 SHA-256 校验失败。'
+  [ "$actual" = "$expected" ] || fail 'vm 二进制 SHA-256 校验失败。'
   mkdir -p /usr/local/bin
-  staged=$(mktemp /usr/local/bin/.vpnm.XXXXXX)
+  staged=$(mktemp /usr/local/bin/.vm.XXXXXX)
   chmod 0755 "$temp/$binary"
   cp "$temp/$binary" "$staged"
   chmod 0755 "$staged"
   mv -f "$staged" "$target"
   printf '已安装 main 成功构建（%s）。\n' "$commit"
+  if [ -f "$state_dir/state.json" ]; then
+    printf '检测到已有配置，未重新执行安装向导；请运行 vm。\n'
+    exit 0
+  fi
   exec "$target" install
 }
 

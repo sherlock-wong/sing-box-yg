@@ -79,7 +79,7 @@ func menu() {
 		state, err := app.LoadState(stateDirectory + "/state.json")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "vpnm:", err)
-			fmt.Fprintln(os.Stderr, "请先运行：vpnm install")
+			fmt.Fprintln(os.Stderr, "请先运行：vm install")
 			return
 		}
 		fmt.Println("\nVPS Net Manager")
@@ -138,7 +138,7 @@ func menu() {
 			}
 			realmState, err := app.LoadRealmState(stateDirectory + "/realm.json")
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "vpnm: Realm 尚未安装；请先运行：vpnm realm install")
+				fmt.Fprintln(os.Stderr, "vm: Realm 尚未安装；请先运行：vm realm install")
 				continue
 			}
 			candidate, changed, err := ui.EditRealm(context.Background(), scanner, os.Stdout, realmState)
@@ -541,7 +541,7 @@ func install(arguments []string) {
 	if _, err := app.DefaultApplyOptions(*stateDirectory, &previous).Apply(context.Background(), candidate); err != nil {
 		fatalIf(err)
 	}
-	fmt.Println("安装完成。之后运行 vpnm 管理节点。")
+	fmt.Println("安装完成。之后运行 vm 管理节点。")
 }
 
 func apply(arguments []string) {
@@ -563,7 +563,7 @@ func apply(arguments []string) {
 func update(arguments []string) {
 	flags := flag.NewFlagSet("update", flag.ExitOnError)
 	stateDirectory := flags.String("state-dir", "/etc/vps-net-manager", "VPNM state directory")
-	binaryPath := flags.String("binary", "/usr/local/bin/vpnm", "VPNM executable path")
+	binaryPath := flags.String("binary", "/usr/local/bin/vm", "VM executable path")
 	flags.Parse(arguments)
 	if os.Geteuid() != 0 {
 		fatalIf(fmt.Errorf("update 必须以 root 运行"))
@@ -583,7 +583,7 @@ func version(arguments []string) {
 	flags := flag.NewFlagSet("version", flag.ExitOnError)
 	stateDirectory := flags.String("state-dir", "/etc/vps-net-manager", "VPNM state directory")
 	flags.Parse(arguments)
-	fmt.Printf("vpnm main-%s\nsource commit: %s\nbuilt at: %s\n", shortCommit(sourceCommit), sourceCommit, builtAt)
+	fmt.Printf("vm main-%s\nsource commit: %s\nbuilt at: %s\n", shortCommit(sourceCommit), sourceCommit, builtAt)
 	cores, err := app.LoadInstalledCores(*stateDirectory)
 	if err != nil {
 		fmt.Println("sing-box: 未安装")
@@ -598,12 +598,12 @@ func uninstall(arguments []string) {
 	yes := flags.Bool("yes", false, "confirm complete VPNM removal")
 	flags.Parse(arguments)
 	if !*yes {
-		fatalIf(fmt.Errorf("卸载会删除 VPNM 状态、项目 unit 和 /usr/local/bin/vpnm；请使用 vpnm uninstall --yes 确认"))
+		fatalIf(fmt.Errorf("卸载会删除 VPNM 状态、项目 unit 和 /usr/local/bin/vm；请使用 vm uninstall --yes 确认"))
 	}
 	if os.Geteuid() != 0 {
 		fatalIf(fmt.Errorf("uninstall 必须以 root 运行"))
 	}
-	fatalIf((app.Uninstaller{StateDirectory: "/etc/vps-net-manager", UnitDirectory: "/etc/systemd/system", BinaryPath: "/usr/local/bin/vpnm"}).Uninstall(context.Background()))
+	fatalIf((app.Uninstaller{StateDirectory: "/etc/vps-net-manager", UnitDirectory: "/etc/systemd/system", BinaryPath: "/usr/local/bin/vm"}).Uninstall(context.Background()))
 	fmt.Println("VPNM 已卸载。")
 }
 
@@ -797,5 +797,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vpnm install | vpnm apply | vpnm update | vpnm uninstall --yes | vpnm cert <sync|acme> | vpnm bbr <status|enable|restore> | vpnm realm <install|validate|apply> | vpnm reality scan | vpnm state validate | vpnm version")
+	fmt.Fprintln(os.Stderr, "usage: vm install | vm apply | vm update | vm uninstall --yes | vm cert <sync|acme> | vm bbr <status|enable|restore> | vm realm <install|validate|apply> | vm reality scan | vm state validate | vm version")
 }

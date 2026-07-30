@@ -63,7 +63,7 @@ func Config(state State) ([]byte, error) {
 	rules := append([]Rule(nil), state.Rules...)
 	sort.SliceStable(rules, func(left, right int) bool { return rules[left].ID < rules[right].ID })
 	var output bytes.Buffer
-	output.WriteString("# Managed by VPS Net Manager. Edit via vpnm to preserve state.\n[log]\nlevel = \"warn\"\n\n[network]\nno_tcp = false\nuse_udp = true\nipv6_only = false\n")
+	output.WriteString("# Managed by VPS Net Manager. Edit via vm to preserve state.\n[log]\nlevel = \"warn\"\n\n[network]\nno_tcp = false\nuse_udp = true\nipv6_only = false\n")
 	for _, rule := range rules {
 		fmt.Fprintf(&output, "\n[[endpoints]]\nlisten = %q\nremote = %q\n", endpoint(rule.ListenHost, rule.ListenPort), endpoint(rule.RemoteHost, rule.RemotePort))
 	}
