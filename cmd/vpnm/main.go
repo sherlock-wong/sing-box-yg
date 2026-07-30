@@ -129,7 +129,9 @@ func menu() {
 			if _, err := app.DefaultApplyOptions(stateDirectory, &state).Apply(context.Background(), candidate); err != nil {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 			} else {
-				fmt.Println("协议配置已应用。")
+				fmt.Println("协议配置已成功应用，以下为当前生效配置：")
+				showCurrentConfiguration(candidate)
+				showProtocolChangeGuide(candidate)
 			}
 		case "4":
 			if os.Geteuid() != 0 {
@@ -229,6 +231,22 @@ func showCurrentConfiguration(state model.State) {
 	}
 	if state.Protocols.VLESSReality == nil && state.Protocols.Hysteria2 == nil && state.Protocols.AnyTLS == nil {
 		fmt.Println("\n当前没有已添加的协议配置。")
+	}
+}
+
+func showProtocolChangeGuide(state model.State) {
+	fmt.Println("\n后续可在“管理协议”中调整：")
+	if state.Protocols.VLESSReality != nil {
+		fmt.Println("  Vless-Reality：启停、端口、UUID、Reality SNI、Reality 密钥与 Short ID、服务端内核。")
+	}
+	if state.Protocols.Hysteria2 != nil {
+		fmt.Println("  Hysteria2：启停、端口、密码、TLS 域名和证书绑定。")
+	}
+	if state.Protocols.AnyTLS != nil {
+		fmt.Println("  AnyTLS：启停、端口、密码、TLS 域名和证书绑定。")
+	}
+	if state.PublicAddress == "" {
+		fmt.Println("  提示：尚未设置分享链接对外地址；导出节点前请在主菜单 7 设置。")
 	}
 }
 
