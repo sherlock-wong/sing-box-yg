@@ -412,21 +412,21 @@ func acmeCertificateMenu(scanner *bufio.Scanner, stateDirectory string, state mo
 		fmt.Println("该证书 ID 已存在；请返回后用“导入已有证书和私钥”更新或另选 ID。")
 		return
 	}
-	certificatePath, ok := promptMenuValue(scanner, "ACME 输出证书路径（回车使用 /root/ygkkkca/cert.crt）：")
+	certificatePath, ok := promptMenuValue(scanner, "ACME 脚本临时证书路径（回车使用 /root/ygkkkca/cert.crt）：")
 	if !ok {
 		return
 	}
 	if certificatePath == "" {
 		certificatePath = "/root/ygkkkca/cert.crt"
 	}
-	keyPath, ok := promptMenuValue(scanner, "ACME 输出私钥路径（回车使用 /root/ygkkkca/private.key）：")
+	keyPath, ok := promptMenuValue(scanner, "ACME 脚本临时私钥路径（回车使用 /root/ygkkkca/private.key）：")
 	if !ok {
 		return
 	}
 	if keyPath == "" {
 		keyPath = "/root/ygkkkca/private.key"
 	}
-	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入证书。")
+	fmt.Println("即将启动 ACME 交互流程；完成后 VPNM 会验证并导入到 /etc/vps-net-manager/certificates/<证书ID>/fullchain.pem 和 privkey.pem。")
 	if _, err := (app.ACMEAdapter{}).RunInteractive(context.Background(), certificatePath, keyPath, domain, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "vpnm:", err)
 		return
