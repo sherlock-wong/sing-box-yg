@@ -531,10 +531,21 @@ func install(arguments []string) {
 	if os.Geteuid() != 0 {
 		fatalIf(fmt.Errorf("install 必须以 root 运行"))
 	}
+	statePath := *stateDirectory + "/state.json"
+	if _, err := os.Stat(statePath); err == nil {
+		if _, err := app.LoadState(statePath); err != nil {
+			fatalIf(err)
+		}
+		fatalIf(app.InstallCertificateTimer(context.Background(), *unitDirectory, nil))
+		fmt.Println("检测到已有配置，已更新 vm 命令和证书定时服务；未修改节点配置。")
+		return
+	} else if !os.IsNotExist(err) {
+		fatalIf(fmt.Errorf("inspect existing state: %w", err))
+	}
 	if _, err := app.Bootstrap(context.Background(), *stateDirectory, *unitDirectory, nil); err != nil {
 		fatalIf(err)
 	}
-	previous, err := app.LoadState(*stateDirectory + "/state.json")
+	previous, err := app.LoadState(statePath)
 	fatalIf(err)
 	candidate, err := ui.InitialSetup(context.Background(), os.Stdin, os.Stdout, *stateDirectory, previous)
 	fatalIf(err)

@@ -83,10 +83,6 @@ main() {
   chmod 0755 "$staged"
   mv -f "$staged" "$target"
   printf '已安装 main 成功构建（%s）。\n' "$commit"
-  if [ -f "$state_dir/state.json" ]; then
-    printf '检测到已有配置，未重新执行安装向导；请运行 vm。\n'
-    exit 0
-  fi
   exec "$target" install
 }
 
