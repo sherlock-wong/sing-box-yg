@@ -53,7 +53,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 		if err != nil {
 			return model.State{}, err
 		}
-		sni, err := prompter.askDefault("Reality SNI", "www.apple.com")
+		sni, err := selectRealitySNI(ctx, prompter, stateDirectory)
 		if err != nil {
 			return model.State{}, err
 		}

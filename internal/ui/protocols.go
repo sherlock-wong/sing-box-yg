@@ -10,6 +10,7 @@ import (
 
 	"github.com/sherlock-wong/vps-net-manager/internal/app"
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
+	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 )
 
 // EditProtocols mutates only an in-memory candidate. The caller decides when
@@ -57,10 +58,8 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 }
 
 func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {
-	_ = ctx
-	_ = stateDirectory
 	if state.Protocols.VLESSReality == nil {
-		sni, err := prompt.askDefault("Reality SNI", "www.apple.com")
+		sni, err := selectRealitySNI(ctx, prompt, stateDirectory)
 		if err != nil {
 			return state, false, err
 		}
@@ -75,7 +74,7 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换 UUID  4 删除配置  0 返回：")
+	choice, err := prompt.ask("1 启停  2 修改端口  3 轮换 UUID  4 删除配置  5 筛选/修改 Reality SNI  0 返回：")
 	if err != nil {
 		return state, false, err
 	}
@@ -97,12 +96,79 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		configuration.UUID = uuid
 	case "4":
 		state.Protocols.VLESSReality = nil
+	case "5":
+		sni, err := selectRealitySNI(ctx, prompt, stateDirectory)
+		if err != nil {
+			return state, false, err
+		}
+		setVLESSSNI(configuration, sni)
 	case "0":
 		return state, false, nil
 	default:
 		return state, false, fmt.Errorf("无效选择")
 	}
 	return state, true, nil
+}
+
+// selectRealitySNI keeps the quick manual path while exposing the embedded or
+// user-maintained candidate list directly in the Vless configuration flow.
+func selectRealitySNI(ctx context.Context, prompt *prompt, stateDirectory string) (string, error) {
+	choice, err := prompt.ask("Reality SNI：1 手动输入（默认 www.apple.com）  2 筛选候选域名：")
+	if err != nil {
+		return "", err
+	}
+	switch choice {
+	case "", "1":
+		return prompt.askDefault("Reality SNI", "www.apple.com")
+	case "2":
+		return scanRealitySNI(ctx, prompt, stateDirectory)
+	default:
+		return "", fmt.Errorf("无效选择")
+	}
+}
+
+func scanRealitySNI(ctx context.Context, prompt *prompt, stateDirectory string) (string, error) {
+	targets, err := reality.LoadTargetsOrDefault(stateDirectory + "/reality-targets.txt")
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
+	defer cancel()
+	fmt.Fprintln(prompt.output, "正在筛选 Reality 候选域名，请稍候……")
+	results, err := reality.Scan(ctx, targets, 2, 10)
+	if err != nil {
+		return "", err
+	}
+	usable := make([]reality.Result, 0, len(results))
+	for _, result := range results {
+		if result.Successes > 0 {
+			usable = append(usable, result)
+		}
+	}
+	if len(usable) == 0 {
+		return "", fmt.Errorf("没有可用候选，请稍后重试或手动输入")
+	}
+	for index, result := range usable {
+		fmt.Fprintf(prompt.output, "  %d. %s（成功 %d/%d，%dms，%s）\n", index+1, result.Host, result.Successes, result.Samples, result.AverageMS, result.Reason)
+	}
+	choice, err := prompt.ask("选择候选编号（0 改为手动输入）：")
+	if err != nil {
+		return "", err
+	}
+	if choice == "0" {
+		return prompt.askDefault("Reality SNI", "www.apple.com")
+	}
+	index, err := strconv.Atoi(choice)
+	if err != nil || index < 1 || index > len(usable) {
+		return "", fmt.Errorf("候选编号无效")
+	}
+	return usable[index-1].Host, nil
+}
+
+func setVLESSSNI(configuration *model.VLESSReality, sni string) {
+	configuration.SNI = sni
+	configuration.Xray.Target = sni + ":443"
+	configuration.Xray.ServerNames = []string{sni}
 }
 
 func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {

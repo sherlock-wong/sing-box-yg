@@ -50,3 +50,14 @@ func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
 		t.Fatal("editor changed original state")
 	}
 }
+
+func TestSelectRealitySNIUsesManualValue(t *testing.T) {
+	var output strings.Builder
+	value, err := selectRealitySNI(context.Background(), &prompt{scanner: bufio.NewScanner(strings.NewReader("1\nwww.cloudflare.com\n")), output: &output}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "www.cloudflare.com" {
+		t.Fatalf("SNI = %q", value)
+	}
+}
