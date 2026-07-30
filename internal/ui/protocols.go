@@ -17,6 +17,43 @@ import (
 	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 )
 
+const vlessManagementPrompt = `
+Vless-Reality 管理
+  1. 查看当前配置
+  2. 启停
+  3. 修改端口
+  4. 轮换 UUID
+  5. 删除配置
+  6. 筛选/修改 Reality SNI
+  7. 轮换 Reality 密钥和 Short ID
+  8. 切换服务端内核
+  0. 返回
+请选择：`
+
+const hysteria2ManagementPrompt = `
+Hysteria2 管理
+  1. 查看当前配置
+  2. 启停
+  3. 修改端口
+  4. 轮换密码
+  5. 删除配置
+  6. 修改 TLS 域名
+  7. 选择证书
+  0. 返回
+请选择：`
+
+const anyTLSManagementPrompt = `
+AnyTLS 管理
+  1. 查看当前配置
+  2. 启停
+  3. 修改端口
+  4. 轮换密码
+  5. 删除配置
+  6. 修改 TLS 域名
+  7. 选择证书
+  0. 返回
+请选择：`
+
 // EditProtocols mutates only an in-memory candidate. The caller decides when
 // to run app.Apply, keeping all service and firewall changes transactional.
 func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer, stateDirectory string, state model.State) (model.State, bool, error) {
@@ -84,7 +121,7 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 	}
 	configuration := state.Protocols.VLESSReality
 	for {
-		choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换 UUID  5 删除配置  6 筛选/修改 Reality SNI  7 轮换 Reality 密钥和 Short ID  8 切换服务端内核  0 返回：")
+		choice, err := prompt.ask(vlessManagementPrompt)
 		if err != nil {
 			return state, false, err
 		}
@@ -248,7 +285,7 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 		state.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换密码  5 删除配置  6 修改 TLS 域名  7 选择证书  0 返回：")
+	choice, err := prompt.ask(hysteria2ManagementPrompt)
 	if err != nil {
 		return state, false, err
 	}
@@ -325,7 +362,7 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 		state.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
 		return state, true, nil
 	}
-	choice, err := prompt.ask("1 查看当前配置  2 启停  3 修改端口  4 轮换密码  5 删除配置  6 修改 TLS 域名  7 选择证书  0 返回：")
+	choice, err := prompt.ask(anyTLSManagementPrompt)
 	if err != nil {
 		return state, false, err
 	}

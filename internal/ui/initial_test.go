@@ -68,7 +68,7 @@ func TestViewingVLESSConfigurationStaysInProtocolMenu(t *testing.T) {
 	if changed {
 		t.Fatal("viewing configuration changed state")
 	}
-	if strings.Count(output.String(), "1 查看当前配置") != 2 {
+	if strings.Count(output.String(), "1. 查看当前配置") != 2 {
 		t.Fatalf("protocol menu was not shown again: %q", output.String())
 	}
 }
