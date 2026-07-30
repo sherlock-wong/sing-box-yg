@@ -47,13 +47,12 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 	}
 	candidate := model.NewSnapshot(state).Snapshot()
 	candidate.PublicAddress = strings.TrimSpace(address)
-	usedPorts := make(map[uint16]struct{})
 	if selected[1] {
-		port, err := availablePort("tcp", usedPorts)
+		sni, err := selectRealitySNI(ctx, prompter, stateDirectory)
 		if err != nil {
 			return model.State{}, err
 		}
-		sni, err := selectRealitySNI(ctx, prompter, stateDirectory)
+		port, err := selectNewPort(prompter, "tcp", candidate)
 		if err != nil {
 			return model.State{}, err
 		}
@@ -73,7 +72,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 			return model.State{}, err
 		}
 		if selected[2] {
-			port, err := availablePort("udp", usedPorts)
+			port, err := selectNewPort(prompter, "udp", candidate)
 			if err != nil {
 				return model.State{}, err
 			}
@@ -84,7 +83,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 			candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: "default", UpMbps: 100, DownMbps: 100}
 		}
 		if selected[3] {
-			port, err := availablePort("tcp", usedPorts)
+			port, err := selectNewPort(prompter, "tcp", candidate)
 			if err != nil {
 				return model.State{}, err
 			}
@@ -159,6 +158,40 @@ func availablePort(network string, used map[uint16]struct{}) (uint16, error) {
 		}
 	}
 	return 0, fmt.Errorf("无法分配可用 %s 端口", network)
+}
+
+// selectNewPort makes the port choice explicit whenever a protocol is added.
+// An automatic choice is still the default, but custom values are checked
+// against both configured protocols and the currently occupied local ports.
+func selectNewPort(prompt *prompt, network string, state model.State) (uint16, error) {
+	choice, err := prompt.ask("端口：1 自动分配随机空闲端口（默认）  2 自定义端口：")
+	if err != nil {
+		return 0, err
+	}
+	used := usedPorts(state)
+	switch choice {
+	case "", "1":
+		return availablePort(network, used)
+	case "2":
+		value, err := prompt.ask("请输入端口（1-65535）：")
+		if err != nil {
+			return 0, err
+		}
+		parsed, err := strconv.ParseUint(value, 10, 16)
+		if err != nil || parsed == 0 {
+			return 0, fmt.Errorf("端口无效")
+		}
+		port := uint16(parsed)
+		if _, exists := used[port]; exists {
+			return 0, fmt.Errorf("端口与现有协议重复")
+		}
+		if !portFree(network, port) {
+			return 0, fmt.Errorf("%d 端口当前不可用", port)
+		}
+		return port, nil
+	default:
+		return 0, fmt.Errorf("无效选择")
+	}
 }
 
 var bigPortRange = big.NewInt(40000)

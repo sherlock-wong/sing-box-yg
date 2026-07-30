@@ -63,7 +63,7 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		if err != nil {
 			return state, false, err
 		}
-		port, err := availablePort("tcp", usedPorts(state))
+		port, err := selectNewPort(prompt, "tcp", state)
 		if err != nil {
 			return state, false, err
 		}
@@ -191,7 +191,7 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 		if err != nil {
 			return state, false, err
 		}
-		port, err := availablePort("udp", usedPorts(state))
+		port, err := selectNewPort(prompt, "udp", state)
 		if err != nil {
 			return state, false, err
 		}
@@ -243,7 +243,7 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 		if err != nil {
 			return state, false, err
 		}
-		port, err := availablePort("tcp", usedPorts(state))
+		port, err := selectNewPort(prompt, "tcp", state)
 		if err != nil {
 			return state, false, err
 		}
@@ -318,8 +318,10 @@ func promptPort(prompt *prompt, current uint16, state model.State, network strin
 				return 0, fmt.Errorf("端口与现有协议重复")
 			}
 		}
+		if !portFree(network, port) {
+			return 0, fmt.Errorf("%d 端口当前不可用", port)
+		}
 	}
-	_ = network
 	return port, nil
 }
 
