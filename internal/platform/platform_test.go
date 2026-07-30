@@ -93,12 +93,35 @@ func TestAcquireLockBlocksUntilContextIsCanceled(t *testing.T) {
 	}
 }
 
-func TestDownloadVerifiedRejectsRedirects(t *testing.T) {
+func TestDownloadVerifiedFollowsHTTPSRedirect(t *testing.T) {
+	payload := []byte("payload")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "downloads.example.test":
+			return &http.Response{StatusCode: http.StatusFound, Status: "302 Found", Header: http.Header{"Location": []string{"https://assets.example.test/vpnm"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		case "assets.example.test":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload)))}, nil
+		default:
+			return nil, fmt.Errorf("unexpected host %s", request.URL.Host)
+		}
+	})}
+	path := filepath.Join(t.TempDir(), "vpnm")
+	if err := DownloadVerified(context.Background(), client, Download{URL: "https://downloads.example.test/vpnm", SHA256: digest}, path); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != string(payload) {
+		t.Fatalf("contents = %q, err = %v", contents, err)
+	}
+}
+
+func TestDownloadVerifiedRejectsHTTPRedirect(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusFound, Status: "302 Found", Header: http.Header{"Location": []string{"http://unsafe.example.test/vpnm"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
 	err := DownloadVerified(context.Background(), client, Download{URL: "https://downloads.example.test/vpnm", SHA256: strings.Repeat("0", 64)}, filepath.Join(t.TempDir(), "vpnm"))
-	if err == nil || !strings.Contains(err.Error(), "unexpected HTTP status") {
+	if err == nil || !strings.Contains(err.Error(), "redirect URL must be HTTPS") {
 		t.Fatalf("error = %v", err)
 	}
 }

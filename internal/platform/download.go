@@ -34,9 +34,18 @@ func DownloadVerified(ctx context.Context, client *http.Client, request Download
 	if client == nil {
 		client = &http.Client{Timeout: 45 * time.Second}
 	}
-	// Do not let an HTTPS source redirect a verified dependency to HTTP.
+	// GitHub release assets use signed HTTPS redirects. Follow only a bounded
+	// HTTPS-only chain so verified dependencies cannot be downgraded to HTTP.
 	localClient := *client
-	localClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	localClient.CheckRedirect = func(next *http.Request, previous []*http.Request) error {
+		if next.URL.Scheme != "https" || next.URL.Host == "" {
+			return fmt.Errorf("redirect URL must be HTTPS")
+		}
+		if len(previous) >= 5 {
+			return fmt.Errorf("too many download redirects")
+		}
+		return nil
+	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
 	if err != nil {
 		return fmt.Errorf("create download request: %w", err)
