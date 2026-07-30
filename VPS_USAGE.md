@@ -16,6 +16,7 @@ vpnm
 ## 协议与客户端输出
 
 - Vless-Reality 在创建时可选择 Sing-box 或 Xray；已添加的协议可在协议菜单中随时切换服务端内核。Xray 配置保留指纹、SpiderX、时间差、ML-DSA-65 与回落限制。
+- 新建 Hysteria2 或 AnyTLS 必须填写自己控制的 TLS 域名；不再提供第三方域名作为默认值。
 - Hysteria2 支持 UDP 跳跃。跳跃范围会被项目管理的 IPv4/IPv6 NAT 规则转发到主端口。
 - AnyTLS 支持默认或自定义 Padding。
 - 菜单的“显示分享链接和二维码”只展示已启用协议；同时生成 Sing-box 客户端 JSON 与 Mihomo YAML 到 `generated/`。

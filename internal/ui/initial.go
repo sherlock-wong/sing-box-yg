@@ -67,7 +67,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 		candidate.Protocols.VLESSReality = vless
 	}
 	if selected[2] || selected[3] {
-		domain, confirmed, err := promptTLSDomain(prompter, "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompter, "")
 		if err != nil {
 			return model.State{}, err
 		}

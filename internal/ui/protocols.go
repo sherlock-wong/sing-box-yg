@@ -217,7 +217,7 @@ func setVLESSSNI(configuration *model.VLESSReality, sni string) {
 
 func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {
 	if state.Protocols.Hysteria2 == nil {
-		domain, confirmed, err := promptTLSDomain(prompt, "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompt, "")
 		if err != nil {
 			return state, false, err
 		}
@@ -290,7 +290,7 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 
 func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, state model.State) (model.State, bool, error) {
 	if state.Protocols.AnyTLS == nil {
-		domain, confirmed, err := promptTLSDomain(prompt, "www.bing.com")
+		domain, confirmed, err := promptTLSDomain(prompt, "")
 		if err != nil {
 			return state, false, err
 		}
@@ -362,11 +362,15 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 }
 
 func promptTLSDomain(prompt *prompt, fallback string) (string, bool, error) {
-	value, err := prompt.ask("普通 TLS 域名（回车使用 " + fallback + "；输入 0 取消）：")
+	label := "普通 TLS 域名（填写自己控制的域名；输入 0 取消）："
+	if fallback != "" {
+		label = "普通 TLS 域名（回车保留 " + fallback + "；输入 0 取消）："
+	}
+	value, err := prompt.ask(label)
 	if err != nil {
 		return "", false, err
 	}
-	if value == "0" {
+	if value == "0" || value == "" && fallback == "" {
 		return "", false, nil
 	}
 	if value == "" {
