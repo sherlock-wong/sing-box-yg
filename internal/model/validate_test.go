@@ -56,6 +56,15 @@ func TestStateValidateRejectsUnknownXrayFallbackProfile(t *testing.T) {
 	}
 }
 
+func TestStateValidateRejectsUnsafeProtocolName(t *testing.T) {
+	state := validState()
+	state.Protocols.AnyTLS.Name = "name\nwith-newline"
+	var validation *ValidationError
+	if !errors.As(state.Validate(), &validation) || validation.Field != "protocols.anytls.name" {
+		t.Fatalf("unexpected error: %v", state.Validate())
+	}
+}
+
 func TestSnapshotDoesNotExposeStateReferences(t *testing.T) {
 	state := validState()
 	view := NewSnapshot(state)

@@ -28,6 +28,7 @@ Vless-Reality 管理
   6. 筛选/修改 Reality SNI
   7. 轮换 Reality 密钥和 Short ID
   8. 切换服务端内核
+  9. 修改节点名称
   0. 返回
 请选择：`
 
@@ -41,6 +42,7 @@ Hysteria2 管理
   6. 修改 TLS 域名
   7. 选择证书
   8. 设置 UDP 跳跃端口
+  9. 修改节点名称
   0. 返回
 请选择：`
 
@@ -53,6 +55,7 @@ AnyTLS 管理
   5. 删除配置
   6. 修改 TLS 域名
   7. 选择证书
+  8. 修改节点名称
   0. 返回
 请选择：`
 
@@ -177,6 +180,15 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 				continue
 			}
 			configuration.Engine = engine
+		case "9":
+			name, changed, err := promptNodeName(prompt, configuration.Name)
+			if err != nil {
+				return state, false, err
+			}
+			if !changed {
+				continue
+			}
+			configuration.Name = name
 		case "0":
 			return state, false, nil
 		default:
@@ -345,6 +357,15 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 		} else {
 			configuration.UDPHop = hop
 		}
+	case "9":
+		name, changed, err := promptNodeName(prompt, configuration.Name)
+		if err != nil {
+			return state, false, err
+		}
+		if !changed {
+			return state, false, nil
+		}
+		configuration.Name = name
 	case "0":
 		return state, false, nil
 	default:
@@ -422,12 +443,34 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 			return state, false, err
 		}
 		configuration.CertificateID = certificateID
+	case "8":
+		name, changed, err := promptNodeName(prompt, configuration.Name)
+		if err != nil {
+			return state, false, err
+		}
+		if !changed {
+			return state, false, nil
+		}
+		configuration.Name = name
 	case "0":
 		return state, false, nil
 	default:
 		return state, false, fmt.Errorf("无效选择")
 	}
 	return state, true, nil
+}
+
+// promptNodeName changes only the display name embedded in subscription and
+// share-link output. An empty answer preserves the existing name.
+func promptNodeName(prompt *prompt, current string) (string, bool, error) {
+	value, err := prompt.ask(fmt.Sprintf("节点名称（当前 %s；回车保持；输入 0 取消）：", current))
+	if err != nil {
+		return "", false, err
+	}
+	if value == "" || value == "0" {
+		return current, false, nil
+	}
+	return strings.TrimSpace(value), true, nil
 }
 
 func promptTLSDomain(prompt *prompt, fallback string) (string, bool, error) {

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -112,6 +114,9 @@ func reservePort(ports map[uint16]string, port uint16, field string) error {
 
 func (protocol VLESSReality) validate() error {
 	const prefix = "protocols.vless_reality."
+	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
+		return err
+	}
 	if protocol.Engine != RealityEngineSingBox && protocol.Engine != RealityEngineXray {
 		return invalid(prefix+"engine", "must be sing-box or xray")
 	}
@@ -158,6 +163,9 @@ func (protocol VLESSReality) validate() error {
 
 func (protocol Hysteria2) validate(certificates map[string]Certificate) error {
 	const prefix = "protocols.hysteria2."
+	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
+		return err
+	}
 	if protocol.Password == "" {
 		return invalid(prefix+"password", "must not be empty")
 	}
@@ -175,6 +183,9 @@ func (protocol Hysteria2) validate(certificates map[string]Certificate) error {
 
 func (protocol AnyTLS) validate(certificates map[string]Certificate) error {
 	const prefix = "protocols.anytls."
+	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
+		return err
+	}
 	if protocol.Password == "" {
 		return invalid(prefix+"password", "must not be empty")
 	}
@@ -189,6 +200,21 @@ func (protocol AnyTLS) validate(certificates map[string]Certificate) error {
 	}
 	if protocol.Padding.Mode == PaddingCustom && len(protocol.Padding.Lines) == 0 {
 		return invalid(prefix+"padding.lines", "must not be empty for custom padding")
+	}
+	return nil
+}
+
+func validateProtocolName(value, field string) error {
+	// An omitted name remains valid for hand-written or older state. Names set
+	// through the UI are non-empty and displayed in share links and clients.
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) == "" || utf8.RuneCountInString(value) > 64 {
+		return invalid(field, "must be 1 to 64 visible characters")
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return invalid(field, "must not contain control characters")
 	}
 	return nil
 }
