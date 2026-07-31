@@ -337,7 +337,20 @@ func configureCloudflareTokenMenu(scanner *bufio.Scanner, stateDirectory string)
 		fmt.Fprintln(os.Stderr, "vm:", err)
 		return
 	}
-	fmt.Println("Cloudflare DNS API 凭据已更新。可运行 vm cert renew 验证续期流程；确认无误后再撤销旧 Token。")
+	fmt.Printf("Cloudflare DNS API 凭据已更新。Token 摘要：%s\n", maskedSecret(token))
+	fmt.Println("可运行 vm cert renew 检查续期流程；确认无误后再撤销旧 Token。")
+}
+
+func maskedSecret(value string) string {
+	const prefixLength = 6
+	const suffixLength = 4
+	if len(value) <= suffixLength {
+		return "****"
+	}
+	if len(value) <= prefixLength+suffixLength {
+		return value[:2] + "****" + value[len(value)-suffixLength:]
+	}
+	return value[:prefixLength] + "****" + value[len(value)-suffixLength:]
 }
 
 func showCertificateLibrary(state model.State) {
