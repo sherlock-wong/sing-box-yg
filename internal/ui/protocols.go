@@ -40,6 +40,7 @@ Hysteria2 管理
   5. 删除配置
   6. 修改 TLS 域名
   7. 选择证书
+  8. 设置 UDP 跳跃端口
   0. 返回
 请选择：`
 
@@ -331,6 +332,19 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 			return state, false, err
 		}
 		configuration.CertificateID = certificateID
+	case "8":
+		hop, err := prompt.ask("UDP 跳跃端口范围（例如 20000:20100；输入 0 关闭；回车取消）：")
+		if err != nil {
+			return state, false, err
+		}
+		if hop == "" {
+			return state, false, nil
+		}
+		if hop == "0" {
+			configuration.UDPHop = ""
+		} else {
+			configuration.UDPHop = hop
+		}
 	case "0":
 		return state, false, nil
 	default:
@@ -599,7 +613,14 @@ func showVLESSConfiguration(output io.Writer, configuration *model.VLESSReality)
 
 func showHysteria2Configuration(output io.Writer, configuration *model.Hysteria2, certificate model.Certificate) {
 	fmt.Fprintln(output, "\nHysteria2 当前配置")
-	fmt.Fprintf(output, "  状态：%s\n  端口：%d/UDP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  带宽：上行 %d Mbps / 下行 %d Mbps\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.UpMbps, configuration.DownMbps)
+	fmt.Fprintf(output, "  状态：%s\n  端口：%d/UDP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  带宽：上行 %d Mbps / 下行 %d Mbps\n  UDP 跳跃端口：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.UpMbps, configuration.DownMbps, displayUDPHop(configuration.UDPHop))
+}
+
+func displayUDPHop(value string) string {
+	if value == "" {
+		return "未启用"
+	}
+	return value
 }
 
 func showAnyTLSConfiguration(output io.Writer, configuration *model.AnyTLS, certificate model.Certificate) {
