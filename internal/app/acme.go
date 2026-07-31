@@ -150,8 +150,19 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 	default:
 		return certificate.Info{}, fmt.Errorf("无效验证方式")
 	}
-	if result, err := platform.Run(ctx, command); err != nil {
-		return certificate.Info{}, fmt.Errorf("issue ACME certificate: %s: %w", strings.TrimSpace(result.Output), err)
+	issuedFullchain := filepath.Join(home, hostname+"_ecc", "fullchain.cer")
+	if _, err := os.Stat(issuedFullchain); os.IsNotExist(err) {
+		if result, err := platform.Run(ctx, command); err != nil {
+			return certificate.Info{}, fmt.Errorf("issue ACME certificate: %s: %w", strings.TrimSpace(result.Output), err)
+		}
+	} else if err != nil {
+		return certificate.Info{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(certificatePath), 0o700); err != nil {
+		return certificate.Info{}, fmt.Errorf("create ACME certificate output directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return certificate.Info{}, fmt.Errorf("create ACME key output directory: %w", err)
 	}
 	install := append(append([]string{}, base...), "--install-cert", "-d", hostname, "--ecc", "--key-file", keyPath, "--fullchain-file", certificatePath)
 	if result, err := platform.Run(ctx, platform.Command{Path: "bash", Args: install, Timeout: 3 * time.Minute}); err != nil {
