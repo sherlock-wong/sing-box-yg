@@ -208,6 +208,42 @@ func readACMESecret(reader *bufio.Reader) (string, error) {
 	return readACMEInput(reader)
 }
 
+// UpdateCloudflareCredentials replaces the credentials acme.sh will use for
+// subsequent DNS-01 renewals. They are shared by certificates in this VPNM
+// ACME home and never written to VPNM state.json.
+func UpdateCloudflareCredentials(stateDirectory, accountID, token string) error {
+	if accountID == "" || token == "" || strings.ContainsAny(accountID, "'\r\n") || strings.ContainsAny(token, "'\r\n") {
+		return fmt.Errorf("invalid Cloudflare credentials")
+	}
+	path := filepath.Join(stateDirectory, "acme-client", "home", "account.conf")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read ACME account configuration: %w", err)
+	}
+	contents = replaceACMEAccountSetting(contents, "SAVED_CF_Account_ID", accountID)
+	contents = replaceACMEAccountSetting(contents, "SAVED_CF_Token", token)
+	if err := platform.AtomicWriteFile(path, contents, 0o600); err != nil {
+		return fmt.Errorf("store ACME Cloudflare credentials: %w", err)
+	}
+	return nil
+}
+
+func replaceACMEAccountSetting(contents []byte, key, value string) []byte {
+	lines := strings.Split(strings.TrimRight(string(contents), "\n"), "\n")
+	needle := key + "="
+	updated := false
+	for index, line := range lines {
+		if strings.HasPrefix(line, needle) {
+			lines[index] = needle + "'" + value + "'"
+			updated = true
+		}
+	}
+	if !updated {
+		lines = append(lines, needle+"'"+value+"'")
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
 // Renew runs acme.sh's non-interactive renewal pass. Certificate deployment
 // paths were registered during issuance; callers should sync the resulting
 // managed source files afterwards.

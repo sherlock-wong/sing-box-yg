@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,28 @@ func TestACMEStateDirectory(t *testing.T) {
 	}
 	if _, err := acmeStateDirectory(filepath.Join(directory, "certs", "demo", "fullchain.pem")); err == nil {
 		t.Fatal("accepted non-ACME certificate path")
+	}
+}
+
+func TestUpdateCloudflareCredentials(t *testing.T) {
+	directory := t.TempDir()
+	home := filepath.Join(directory, "acme-client", "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "account.conf")
+	if err := os.WriteFile(path, []byte("SAVED_CF_Token='old'\nOTHER='value'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateCloudflareCredentials(directory, "account", "new-token"); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(contents); !strings.Contains(got, "SAVED_CF_Account_ID='account'") || !strings.Contains(got, "SAVED_CF_Token='new-token'") || !strings.Contains(got, "OTHER='value'") {
+		t.Fatalf("account config = %q", got)
 	}
 }
 

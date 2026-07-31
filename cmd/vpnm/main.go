@@ -19,6 +19,7 @@ import (
 	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 	"github.com/sherlock-wong/vps-net-manager/internal/subscription"
 	"github.com/sherlock-wong/vps-net-manager/internal/ui"
+	"golang.org/x/term"
 )
 
 var (
@@ -273,6 +274,7 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 		fmt.Println("  4. 立即同步受管证书来源")
 		fmt.Println("  5. 管理证书来源路径")
 		fmt.Println("  6. 申请域名证书（ACME）")
+		fmt.Println("  7. 更换 Cloudflare DNS API Token")
 		fmt.Println("  0. 返回主菜单")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -298,12 +300,44 @@ func certificateMenu(scanner *bufio.Scanner, stateDirectory string) {
 			manageCertificateSourceMenu(scanner, stateDirectory, state)
 		case "6":
 			acmeCertificateMenu(scanner, stateDirectory, state)
+		case "7":
+			configureCloudflareTokenMenu(scanner, stateDirectory)
 		case "0":
 			return
 		default:
 			fmt.Println("无效选择。")
 		}
 	}
+}
+
+func configureCloudflareTokenMenu(scanner *bufio.Scanner, stateDirectory string) {
+	fmt.Println("\nCloudflare DNS API Token")
+	fmt.Println("此 Token 供当前 VPNM 的 Cloudflare ACME 证书自动续期使用；更换后再撤销旧 Token。")
+	accountID, ok := promptMenuValue(scanner, "Cloudflare Account ID（输入 0 取消）：")
+	if !ok || accountID == "" || accountID == "0" {
+		return
+	}
+	fmt.Print("Cloudflare DNS API Token（输入不回显）：")
+	var token string
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		value, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vm:", err)
+			return
+		}
+		token = strings.TrimSpace(string(value))
+	} else {
+		if !scanner.Scan() {
+			return
+		}
+		token = strings.TrimSpace(scanner.Text())
+	}
+	if err := app.UpdateCloudflareCredentials(stateDirectory, accountID, token); err != nil {
+		fmt.Fprintln(os.Stderr, "vm:", err)
+		return
+	}
+	fmt.Println("Cloudflare DNS API 凭据已更新。可运行 vm cert renew 验证续期流程；确认无误后再撤销旧 Token。")
 }
 
 func showCertificateLibrary(state model.State) {
