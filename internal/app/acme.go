@@ -14,6 +14,7 @@ import (
 	"github.com/sherlock-wong/vps-net-manager/internal/dependency"
 	"github.com/sherlock-wong/vps-net-manager/internal/model"
 	"github.com/sherlock-wong/vps-net-manager/internal/platform"
+	"golang.org/x/term"
 )
 
 // ACMEAdapter executes only the lockfile-pinned script. A successful process
@@ -136,8 +137,8 @@ func (adapter ACMEAdapter) RunInteractive(ctx context.Context, certificatePath, 
 		if err != nil || accountID == "" {
 			return certificate.Info{}, fmt.Errorf("Cloudflare Account ID 不能为空")
 		}
-		fmt.Fprint(os.Stdout, "Cloudflare DNS API Token：")
-		token, err := readACMEInput(reader)
+		fmt.Fprint(os.Stdout, "Cloudflare DNS API Token（输入不回显，请勿发送到聊天）：")
+		token, err := readACMESecret(reader)
 		if err != nil || token == "" {
 			return certificate.Info{}, fmt.Errorf("Cloudflare DNS API Token 不能为空")
 		}
@@ -185,6 +186,15 @@ func readACMEInput(reader *bufio.Reader) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(value), nil
+}
+
+func readACMESecret(reader *bufio.Reader) (string, error) {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		value, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stdout)
+		return strings.TrimSpace(string(value)), err
+	}
+	return readACMEInput(reader)
 }
 
 // Renew runs acme.sh's non-interactive renewal pass. Certificate deployment
