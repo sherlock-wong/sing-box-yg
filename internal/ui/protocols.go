@@ -67,11 +67,18 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 	changed := false
 	for {
 		fmt.Fprintln(output, "\n管理协议")
-		fmt.Fprintf(output, "  1. Vless-Reality（%s）\n", status(candidate.Protocols.VLESSReality != nil, vlessEnabled(candidate.Protocols.VLESSReality)))
-		fmt.Fprintf(output, "  2. Hysteria2（%s）\n", status(candidate.Protocols.Hysteria2 != nil, hy2Enabled(candidate.Protocols.Hysteria2)))
-		fmt.Fprintf(output, "  3. AnyTLS（%s）\n", status(candidate.Protocols.AnyTLS != nil, anyTLSEnabled(candidate.Protocols.AnyTLS)))
+		vlessStatus := status(candidate.Protocols.VLESSReality != nil, vlessEnabled(candidate.Protocols.VLESSReality))
+		hy2Status := status(candidate.Protocols.Hysteria2 != nil, hy2Enabled(candidate.Protocols.Hysteria2))
+		anyTLSStatus := status(candidate.Protocols.AnyTLS != nil, anyTLSEnabled(candidate.Protocols.AnyTLS))
 		if changed {
-			fmt.Fprintln(output, "  0. 保存并返回主菜单")
+			fmt.Fprintln(output, "  ⚠ 当前显示的是未保存草稿，服务仍在使用旧配置。")
+			vlessStatus, hy2Status, anyTLSStatus = draftStatus(vlessStatus), draftStatus(hy2Status), draftStatus(anyTLSStatus)
+		}
+		fmt.Fprintf(output, "  1. Vless-Reality（%s）\n", vlessStatus)
+		fmt.Fprintf(output, "  2. Hysteria2（%s）\n", hy2Status)
+		fmt.Fprintf(output, "  3. AnyTLS（%s）\n", anyTLSStatus)
+		if changed {
+			fmt.Fprintln(output, "  0. 保存草稿并立即应用到服务")
 		} else {
 			fmt.Fprintln(output, "  0. 返回主菜单")
 		}
@@ -103,7 +110,7 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 				return model.State{}, false, err
 			}
 			changed = true
-			fmt.Fprintln(output, "修改已暂存；请选择“0. 保存并返回主菜单”以应用到服务。")
+			fmt.Fprintln(output, "⚠ 修改已暂存，服务尚未变更；请选择“0. 保存草稿并立即应用到服务”。")
 		}
 	}
 }
@@ -730,6 +737,8 @@ func status(configured, enabled bool) string {
 	}
 	return "已停用"
 }
+
+func draftStatus(value string) string             { return "草稿：" + value }
 func vlessEnabled(value *model.VLESSReality) bool { return value != nil && value.Enabled }
 func hy2Enabled(value *model.Hysteria2) bool      { return value != nil && value.Enabled }
 func anyTLSEnabled(value *model.AnyTLS) bool      { return value != nil && value.Enabled }
