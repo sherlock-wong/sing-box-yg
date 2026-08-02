@@ -29,6 +29,7 @@ Vless-Reality 管理
   7. 轮换 Reality 密钥和 Short ID
   8. 切换服务端内核
   9. 修改节点名称
+  10. 修改分享链接对外地址
   0. 返回
 请选择：`
 
@@ -43,6 +44,7 @@ Hysteria2 管理
   7. 选择证书
   8. 设置 UDP 跳跃端口
   9. 修改节点名称
+  10. 修改分享链接对外地址
   0. 返回
 请选择：`
 
@@ -56,6 +58,7 @@ AnyTLS 管理
   6. 修改 TLS 域名
   7. 选择证书
   8. 修改节点名称
+  9. 修改分享链接对外地址
   0. 返回
 请选择：`
 
@@ -158,6 +161,11 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 		if err != nil {
 			return state, false, err
 		}
+		address, _, err := promptShareAddress(prompt, "Vless-Reality")
+		if err != nil {
+			return state, false, err
+		}
+		configuration.PublicAddress = address
 		state.Protocols.VLESSReality = configuration
 		return state, true, nil
 	}
@@ -221,6 +229,15 @@ func editVLESS(ctx context.Context, prompt *prompt, stateDirectory string, state
 				continue
 			}
 			configuration.Name = name
+		case "10":
+			address, changed, err := editShareAddress(prompt, "Vless-Reality", configuration.PublicAddress)
+			if err != nil {
+				return state, false, err
+			}
+			if !changed {
+				continue
+			}
+			configuration.PublicAddress = address
 		case "0":
 			return state, false, nil
 		default:
@@ -333,7 +350,11 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 		if err != nil {
 			return state, false, err
 		}
-		state.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
+		address, _, err := promptShareAddress(prompt, "Hysteria2")
+		if err != nil {
+			return state, false, err
+		}
+		state.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", PublicAddress: address, Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
 		return state, true, nil
 	}
 	choice, err := prompt.ask(hysteria2ManagementPrompt)
@@ -398,6 +419,15 @@ func editHysteria2(ctx context.Context, prompt *prompt, stateDirectory string, s
 			return state, false, nil
 		}
 		configuration.Name = name
+	case "10":
+		address, changed, err := editShareAddress(prompt, "Hysteria2", configuration.PublicAddress)
+		if err != nil {
+			return state, false, err
+		}
+		if !changed {
+			return state, false, nil
+		}
+		configuration.PublicAddress = address
 	case "0":
 		return state, false, nil
 	default:
@@ -432,7 +462,11 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 		if err != nil {
 			return state, false, err
 		}
-		state.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
+		address, _, err := promptShareAddress(prompt, "AnyTLS")
+		if err != nil {
+			return state, false, err
+		}
+		state.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", PublicAddress: address, Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
 		return state, true, nil
 	}
 	choice, err := prompt.ask(anyTLSManagementPrompt)
@@ -484,6 +518,15 @@ func editAnyTLS(ctx context.Context, prompt *prompt, stateDirectory string, stat
 			return state, false, nil
 		}
 		configuration.Name = name
+	case "9":
+		address, changed, err := editShareAddress(prompt, "AnyTLS", configuration.PublicAddress)
+		if err != nil {
+			return state, false, err
+		}
+		if !changed {
+			return state, false, nil
+		}
+		configuration.PublicAddress = address
 	case "0":
 		return state, false, nil
 	default:
@@ -683,12 +726,12 @@ func promptPort(prompt *prompt, current uint16, state model.State, network strin
 
 func showVLESSConfiguration(output io.Writer, configuration *model.VLESSReality) {
 	fmt.Fprintln(output, "\nVless-Reality 当前配置")
-	fmt.Fprintf(output, "  状态：%s\n  端口：%d/TCP\n  节点名称：%s\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
+	fmt.Fprintf(output, "  状态：%s\n  分享地址：%s\n  端口：%d/TCP\n  节点名称：%s\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", status(true, configuration.Enabled), displayShareAddress(configuration.PublicAddress), configuration.Port, configuration.Name, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
 }
 
 func showHysteria2Configuration(output io.Writer, configuration *model.Hysteria2, certificate model.Certificate) {
 	fmt.Fprintln(output, "\nHysteria2 当前配置")
-	fmt.Fprintf(output, "  状态：%s\n  端口：%d/UDP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  带宽：上行 %d Mbps / 下行 %d Mbps\n  UDP 跳跃端口：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.UpMbps, configuration.DownMbps, displayUDPHop(configuration.UDPHop))
+	fmt.Fprintf(output, "  状态：%s\n  分享地址：%s\n  端口：%d/UDP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  带宽：上行 %d Mbps / 下行 %d Mbps\n  UDP 跳跃端口：%s\n", status(true, configuration.Enabled), displayShareAddress(configuration.PublicAddress), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.UpMbps, configuration.DownMbps, displayUDPHop(configuration.UDPHop))
 }
 
 func displayUDPHop(value string) string {
@@ -700,7 +743,14 @@ func displayUDPHop(value string) string {
 
 func showAnyTLSConfiguration(output io.Writer, configuration *model.AnyTLS, certificate model.Certificate) {
 	fmt.Fprintln(output, "\nAnyTLS 当前配置")
-	fmt.Fprintf(output, "  状态：%s\n  端口：%d/TCP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  Padding：%s\n", status(true, configuration.Enabled), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.Padding.Mode)
+	fmt.Fprintf(output, "  状态：%s\n  分享地址：%s\n  端口：%d/TCP\n  节点名称：%s\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n  Padding：%s\n", status(true, configuration.Enabled), displayShareAddress(configuration.PublicAddress), configuration.Port, configuration.Name, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password, configuration.Padding.Mode)
+}
+
+func displayShareAddress(value string) string {
+	if value == "" {
+		return "未设置"
+	}
+	return value
 }
 
 func selectCertificate(prompt *prompt, state model.State, hostname string) (string, error) {

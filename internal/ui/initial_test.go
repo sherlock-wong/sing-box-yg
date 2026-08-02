@@ -13,7 +13,7 @@ import (
 
 func TestInitialSetupAllowsZeroProtocolState(t *testing.T) {
 	var output strings.Builder
-	state, err := InitialSetup(context.Background(), strings.NewReader("0\n\n"), &output, t.TempDir(), model.NewState())
+	state, err := InitialSetup(context.Background(), strings.NewReader("0\n"), &output, t.TempDir(), model.NewState())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +73,24 @@ func TestEditProtocolsMakesCoreChangeExplicitlyPendingUntilSaved(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "4. 保存草稿、应用服务并返回主菜单") || !strings.Contains(output.String(), "5. 删除草稿并返回主菜单") || !strings.Contains(output.String(), "草稿：已启用") || !strings.Contains(output.String(), "服务仍在使用旧配置") {
 		t.Fatalf("missing save guidance: %q", output.String())
+	}
+}
+
+func TestEditProtocolsChangesOnlySelectedProtocolShareAddress(t *testing.T) {
+	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration.PublicAddress = "old.example.com"
+	state := model.NewState()
+	state.Protocols.VLESSReality = configuration
+	var output strings.Builder
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n10\nreality.example.com\n4\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || candidate.Protocols.VLESSReality.PublicAddress != "reality.example.com" || state.Protocols.VLESSReality.PublicAddress != "old.example.com" {
+		t.Fatalf("candidate=%+v state=%+v changed=%v", candidate.Protocols.VLESSReality, state.Protocols.VLESSReality, changed)
 	}
 }
 

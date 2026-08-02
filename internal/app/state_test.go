@@ -54,6 +54,25 @@ func TestLoadStateAcceptsEmptySchemaOneState(t *testing.T) {
 	}
 }
 
+func TestLoadStateMigratesLegacySharedAddress(t *testing.T) {
+	directory := t.TempDir()
+	contents, err := json.Marshal(appState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "state.json")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PublicAddress != "" || state.Protocols.VLESSReality.PublicAddress != "node.example.com" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
 func TestLoadStateRejectsLegacyCertificateDirectory(t *testing.T) {
 	directory := t.TempDir()
 	state := model.NewState()

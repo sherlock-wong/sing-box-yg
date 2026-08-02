@@ -117,6 +117,9 @@ func (protocol VLESSReality) validate() error {
 	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
 		return err
 	}
+	if err := validatePublicAddress(protocol.PublicAddress, prefix+"public_address"); err != nil {
+		return err
+	}
 	if protocol.Engine != RealityEngineSingBox && protocol.Engine != RealityEngineXray {
 		return invalid(prefix+"engine", "must be sing-box or xray")
 	}
@@ -166,6 +169,9 @@ func (protocol Hysteria2) validate(certificates map[string]Certificate) error {
 	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
 		return err
 	}
+	if err := validatePublicAddress(protocol.PublicAddress, prefix+"public_address"); err != nil {
+		return err
+	}
 	if protocol.Password == "" {
 		return invalid(prefix+"password", "must not be empty")
 	}
@@ -184,6 +190,9 @@ func (protocol Hysteria2) validate(certificates map[string]Certificate) error {
 func (protocol AnyTLS) validate(certificates map[string]Certificate) error {
 	const prefix = "protocols.anytls."
 	if err := validateProtocolName(protocol.Name, prefix+"name"); err != nil {
+		return err
+	}
+	if err := validatePublicAddress(protocol.PublicAddress, prefix+"public_address"); err != nil {
 		return err
 	}
 	if protocol.Password == "" {
@@ -219,6 +228,13 @@ func validateProtocolName(value, field string) error {
 	return nil
 }
 
+func validatePublicAddress(value, field string) error {
+	if value != "" && !validHost(value) {
+		return invalid(field, "must be a hostname or IP address without a port")
+	}
+	return nil
+}
+
 func validateCertificateRef(id string, certificates map[string]Certificate, prefix string) error {
 	if id == "" {
 		return invalid(prefix+"certificate_id", "must not be empty")
@@ -248,7 +264,7 @@ func validateUDPHop(value, field string) error {
 func validHost(value string) bool { return net.ParseIP(value) != nil || validHostname(value) }
 
 func validHostname(host string) bool {
-	if len(host) == 0 || len(host) > 253 || strings.ContainsAny(host, ":/ \\t") {
+	if len(host) == 0 || len(host) > 253 || strings.ContainsAny(host, ":/ \t") {
 		return false
 	}
 	for _, label := range strings.Split(host, ".") {

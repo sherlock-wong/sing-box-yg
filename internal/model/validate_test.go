@@ -65,6 +65,26 @@ func TestStateValidateRejectsUnsafeProtocolName(t *testing.T) {
 	}
 }
 
+func TestStateMigratesLegacyPublicAddressPerProtocol(t *testing.T) {
+	state := validState()
+	state.PublicAddress = "node.example.com"
+	state.Protocols.Hysteria2.PublicAddress = "hy2.example.com"
+	if !state.MigrateLegacyPublicAddress() {
+		t.Fatal("legacy address was not migrated")
+	}
+	if state.PublicAddress != "" || state.Protocols.VLESSReality.PublicAddress != "node.example.com" || state.Protocols.Hysteria2.PublicAddress != "hy2.example.com" || state.Protocols.AnyTLS.PublicAddress != "node.example.com" {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestStateValidateAllowsHostnameContainingLetterT(t *testing.T) {
+	state := validState()
+	state.Protocols.AnyTLS.PublicAddress = "anytls.example.com"
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSnapshotDoesNotExposeStateReferences(t *testing.T) {
 	state := validState()
 	view := NewSnapshot(state)

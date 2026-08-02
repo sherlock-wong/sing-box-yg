@@ -39,12 +39,7 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 	if err != nil {
 		return model.State{}, err
 	}
-	address, err := prompter.ask("对外地址（可稍后设置；支持域名、IPv4 或 IPv6）：")
-	if err != nil {
-		return model.State{}, err
-	}
 	candidate := model.NewSnapshot(state).Snapshot()
-	candidate.PublicAddress = strings.TrimSpace(address)
 	if selected[1] {
 		sni, err := selectRealitySNI(ctx, prompter, stateDirectory)
 		if err != nil {
@@ -62,6 +57,11 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 		if err != nil {
 			return model.State{}, err
 		}
+		address, _, err := promptShareAddress(prompter, "Vless-Reality")
+		if err != nil {
+			return model.State{}, err
+		}
+		vless.PublicAddress = address
 		candidate.Protocols.VLESSReality = vless
 	}
 	if selected[2] || selected[3] {
@@ -85,7 +85,11 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 				if err != nil {
 					return model.State{}, err
 				}
-				candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
+				address, _, err := promptShareAddress(prompter, "Hysteria2")
+				if err != nil {
+					return model.State{}, err
+				}
+				candidate.Protocols.Hysteria2 = &model.Hysteria2{Enabled: true, Name: "hysteria2", PublicAddress: address, Port: port, Password: password, Domain: domain, CertificateID: certificateID, UpMbps: 100, DownMbps: 100}
 			}
 			if certificateConfirmed && selected[3] {
 				port, err := selectNewPort(prompter, "tcp", candidate)
@@ -96,7 +100,11 @@ func InitialSetup(ctx context.Context, input io.Reader, output io.Writer, stateD
 				if err != nil {
 					return model.State{}, err
 				}
-				candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
+				address, _, err := promptShareAddress(prompter, "AnyTLS")
+				if err != nil {
+					return model.State{}, err
+				}
+				candidate.Protocols.AnyTLS = &model.AnyTLS{Enabled: true, Name: "anytls", PublicAddress: address, Port: port, Password: password, Domain: domain, CertificateID: certificateID, Padding: model.Padding{Mode: model.PaddingDefault}}
 			}
 		}
 	}

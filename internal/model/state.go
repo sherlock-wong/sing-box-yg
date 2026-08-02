@@ -14,7 +14,9 @@ func NewState() State {
 // State is the complete typed state stored at /etc/vps-net-manager/state.json.
 // A nil protocol pointer means that protocol has not been added.
 type State struct {
-	Schema        int                    `json:"schema"`
+	Schema int `json:"schema"`
+	// PublicAddress is retained only to read states written before share
+	// addresses became protocol-specific. New state never writes it.
 	PublicAddress string                 `json:"public_address,omitempty"`
 	Protocols     Protocols              `json:"protocols"`
 	Certificates  map[string]Certificate `json:"certificates,omitempty"`
@@ -29,16 +31,17 @@ type Protocols struct {
 // VLESSReality holds both Sing-box and Xray Reality options. Engine selects
 // the only server core allowed to own this inbound.
 type VLESSReality struct {
-	Enabled    bool          `json:"enabled"`
-	Name       string        `json:"name,omitempty"`
-	Port       uint16        `json:"port"`
-	Engine     RealityEngine `json:"engine"`
-	UUID       string        `json:"uuid"`
-	SNI        string        `json:"sni"`
-	PrivateKey string        `json:"private_key"`
-	PublicKey  string        `json:"public_key"`
-	ShortID    string        `json:"short_id"`
-	Xray       XrayReality   `json:"xray,omitempty"`
+	Enabled       bool          `json:"enabled"`
+	Name          string        `json:"name,omitempty"`
+	PublicAddress string        `json:"public_address,omitempty"`
+	Port          uint16        `json:"port"`
+	Engine        RealityEngine `json:"engine"`
+	UUID          string        `json:"uuid"`
+	SNI           string        `json:"sni"`
+	PrivateKey    string        `json:"private_key"`
+	PublicKey     string        `json:"public_key"`
+	ShortID       string        `json:"short_id"`
+	Xray          XrayReality   `json:"xray,omitempty"`
 }
 
 type RealityEngine string
@@ -64,6 +67,7 @@ type XrayReality struct {
 type Hysteria2 struct {
 	Enabled       bool   `json:"enabled"`
 	Name          string `json:"name,omitempty"`
+	PublicAddress string `json:"public_address,omitempty"`
 	Port          uint16 `json:"port"`
 	Password      string `json:"password"`
 	Domain        string `json:"domain"`
@@ -76,6 +80,7 @@ type Hysteria2 struct {
 type AnyTLS struct {
 	Enabled       bool    `json:"enabled"`
 	Name          string  `json:"name,omitempty"`
+	PublicAddress string  `json:"public_address,omitempty"`
 	Port          uint16  `json:"port"`
 	Password      string  `json:"password"`
 	Domain        string  `json:"domain"`
@@ -152,4 +157,26 @@ func cloneState(state State) State {
 		copy.Protocols.AnyTLS = &value
 	}
 	return copy
+}
+
+// MigrateLegacyPublicAddress moves the old shared address into every
+// configured protocol that has not chosen its own address yet. It is safe to
+// call repeatedly and clears the legacy field so the next persisted state is
+// fully protocol-specific.
+func (state *State) MigrateLegacyPublicAddress() bool {
+	if state.PublicAddress == "" {
+		return false
+	}
+	legacy := state.PublicAddress
+	if item := state.Protocols.VLESSReality; item != nil && item.PublicAddress == "" {
+		item.PublicAddress = legacy
+	}
+	if item := state.Protocols.Hysteria2; item != nil && item.PublicAddress == "" {
+		item.PublicAddress = legacy
+	}
+	if item := state.Protocols.AnyTLS; item != nil && item.PublicAddress == "" {
+		item.PublicAddress = legacy
+	}
+	state.PublicAddress = ""
+	return true
 }

@@ -34,6 +34,10 @@ func LoadState(path string) (model.State, error) {
 	if err := state.Validate(); err != nil {
 		return model.State{}, fmt.Errorf("validate state: %w", err)
 	}
+	state.MigrateLegacyPublicAddress()
+	if err := state.Validate(); err != nil {
+		return model.State{}, fmt.Errorf("validate migrated state: %w", err)
+	}
 	if err := validateManagedCertificatePaths(state, filepath.Dir(path)); err != nil {
 		return model.State{}, err
 	}

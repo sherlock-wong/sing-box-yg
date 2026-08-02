@@ -93,9 +93,8 @@ func menu() {
 		fmt.Println("  4. Realm 端口转发")
 		fmt.Println("  5. BBR 管理")
 		fmt.Println("  6. 显示分享链接和二维码")
-		fmt.Println("  7. 修改分享链接对外地址")
-		fmt.Println("  8. 证书管理")
-		fmt.Println("  9. 查看原始 JSON 配置")
+		fmt.Println("  7. 证书管理")
+		fmt.Println("  8. 查看原始 JSON 配置")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -170,44 +169,27 @@ func menu() {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 				continue
 			}
-			if !links.AddressAvailable {
-				fmt.Println("尚未设置分享链接对外地址；请先选择 7 填写域名、IPv4 或 IPv6。")
-				continue
-			}
 			if len(links.Links) == 0 {
+				if len(links.MissingAddresses) > 0 {
+					fmt.Printf("以下已启用协议尚未设置分享链接对外地址：%s；请在“管理协议”中分别设置。\n", strings.Join(links.MissingAddresses, "、"))
+					continue
+				}
 				fmt.Println("当前没有可导出的已启用协议。")
 				continue
 			}
 			if err := ui.PrintShareLinks(os.Stdout, links.Links); err != nil {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 			}
+			if len(links.MissingAddresses) > 0 {
+				fmt.Printf("未导出以下已启用协议（尚未设置分享链接对外地址）：%s。\n", strings.Join(links.MissingAddresses, "、"))
+			}
 		case "7":
-			if os.Geteuid() != 0 {
-				fmt.Fprintln(os.Stderr, "vpnm: 修改对外地址必须以 root 运行")
-				continue
-			}
-			fmt.Print("对外地址（域名、IPv4 或 IPv6；输入 0 取消）：")
-			if !scanner.Scan() {
-				return
-			}
-			address := strings.TrimSpace(scanner.Text())
-			if address == "0" {
-				continue
-			}
-			candidate := state
-			candidate.PublicAddress = address
-			if _, err := app.DefaultApplyOptions(stateDirectory, &state).Apply(context.Background(), candidate); err != nil {
-				fmt.Fprintln(os.Stderr, "vpnm:", err)
-			} else {
-				fmt.Println("分享链接对外地址已更新。")
-			}
-		case "8":
 			if os.Geteuid() != 0 {
 				fmt.Fprintln(os.Stderr, "vpnm: 证书管理必须以 root 运行")
 				continue
 			}
 			certificateMenu(scanner, stateDirectory)
-		case "9":
+		case "8":
 			showRawConfiguration(state)
 		case "0":
 			return
@@ -218,17 +200,16 @@ func menu() {
 }
 
 func showCurrentConfiguration(state model.State) {
-	fmt.Printf("\n公网地址：%s\n", valueOrUnset(state.PublicAddress))
 	if configuration := state.Protocols.VLESSReality; configuration != nil {
-		fmt.Printf("\nVless-Reality（%s）\n  端口：%d/TCP\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
+		fmt.Printf("\nVless-Reality（%s）\n  分享地址：%s\n  端口：%d/TCP\n  内核：%s\n  UUID：%s\n  Reality SNI：%s\n  Public Key：%s\n  Short ID：%s\n", protocolStatus(true, configuration.Enabled), valueOrUnset(configuration.PublicAddress), configuration.Port, configuration.Engine, configuration.UUID, configuration.SNI, configuration.PublicKey, configuration.ShortID)
 	}
 	if configuration := state.Protocols.Hysteria2; configuration != nil {
 		certificate := state.Certificates[configuration.CertificateID]
-		fmt.Printf("\nHysteria2（%s）\n  端口：%d/UDP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
+		fmt.Printf("\nHysteria2（%s）\n  分享地址：%s\n  端口：%d/UDP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), valueOrUnset(configuration.PublicAddress), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
 	}
 	if configuration := state.Protocols.AnyTLS; configuration != nil {
 		certificate := state.Certificates[configuration.CertificateID]
-		fmt.Printf("\nAnyTLS（%s）\n  端口：%d/TCP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
+		fmt.Printf("\nAnyTLS（%s）\n  分享地址：%s\n  端口：%d/TCP\n  TLS 域名：%s\n  证书：%s（%s）\n  密码：%s\n", protocolStatus(true, configuration.Enabled), valueOrUnset(configuration.PublicAddress), configuration.Port, configuration.Domain, certificate.Name, configuration.CertificateID, configuration.Password)
 	}
 	if state.Protocols.VLESSReality == nil && state.Protocols.Hysteria2 == nil && state.Protocols.AnyTLS == nil {
 		fmt.Println("\n当前没有已添加的协议配置。")
@@ -238,16 +219,13 @@ func showCurrentConfiguration(state model.State) {
 func showProtocolChangeGuide(state model.State) {
 	fmt.Println("\n后续可在“管理协议”中调整：")
 	if state.Protocols.VLESSReality != nil {
-		fmt.Println("  Vless-Reality：启停、端口、UUID、Reality SNI、Reality 密钥与 Short ID、服务端内核。")
+		fmt.Println("  Vless-Reality：启停、端口、UUID、Reality SNI、Reality 密钥与 Short ID、服务端内核、分享地址。")
 	}
 	if state.Protocols.Hysteria2 != nil {
-		fmt.Println("  Hysteria2：启停、端口、密码、TLS 域名和证书绑定。")
+		fmt.Println("  Hysteria2：启停、端口、密码、TLS 域名、证书绑定和分享地址。")
 	}
 	if state.Protocols.AnyTLS != nil {
-		fmt.Println("  AnyTLS：启停、端口、密码、TLS 域名和证书绑定。")
-	}
-	if state.PublicAddress == "" {
-		fmt.Println("  提示：尚未设置分享链接对外地址；导出节点前请在主菜单 7 设置。")
+		fmt.Println("  AnyTLS：启停、端口、密码、TLS 域名、证书绑定和分享地址。")
 	}
 }
 
