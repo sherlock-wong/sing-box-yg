@@ -41,7 +41,7 @@ func TestEditProtocolsTogglesExistingProtocolWithoutWritingState(t *testing.T) {
 	state := model.NewState()
 	state.Protocols.VLESSReality = configuration
 	var output strings.Builder
-	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n2\n0\n")), &output, t.TempDir(), state)
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n2\n4\n")), &output, t.TempDir(), state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestEditProtocolsMakesCoreChangeExplicitlyPendingUntilSaved(t *testing.T) {
 	state := model.NewState()
 	state.Protocols.VLESSReality = configuration
 	var output strings.Builder
-	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n8\n2\n0\n")), &output, t.TempDir(), state)
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n8\n2\n4\n")), &output, t.TempDir(), state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +71,28 @@ func TestEditProtocolsMakesCoreChangeExplicitlyPendingUntilSaved(t *testing.T) {
 	if state.Protocols.VLESSReality.Engine != model.RealityEngineSingBox {
 		t.Fatal("editor changed original state")
 	}
-	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "保存草稿、应用服务并返回主菜单") || !strings.Contains(output.String(), "草稿：已启用") || !strings.Contains(output.String(), "服务仍在使用旧配置") {
+	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "4. 保存草稿、应用服务并返回主菜单") || !strings.Contains(output.String(), "5. 删除草稿并返回主菜单") || !strings.Contains(output.String(), "草稿：已启用") || !strings.Contains(output.String(), "服务仍在使用旧配置") {
 		t.Fatalf("missing save guidance: %q", output.String())
+	}
+}
+
+func TestEditProtocolsCanDiscardDraft(t *testing.T) {
+	configuration, err := newVLESS(443, "www.example.com", model.RealityEngineSingBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := model.NewState()
+	state.Protocols.VLESSReality = configuration
+	var output strings.Builder
+	candidate, changed, err := EditProtocols(context.Background(), bufio.NewScanner(strings.NewReader("1\n2\n0\n2\n")), &output, t.TempDir(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || !candidate.Protocols.VLESSReality.Enabled {
+		t.Fatalf("candidate = %+v, changed = %v", candidate.Protocols.VLESSReality, changed)
+	}
+	if !strings.Contains(output.String(), "当前已经设置了草稿") || !strings.Contains(output.String(), "草稿已删除") {
+		t.Fatalf("missing discard confirmation: %q", output.String())
 	}
 }
 

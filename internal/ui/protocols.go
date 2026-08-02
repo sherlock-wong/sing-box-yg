@@ -78,16 +78,41 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 		fmt.Fprintf(output, "  2. Hysteria2（%s）\n", hy2Status)
 		fmt.Fprintf(output, "  3. AnyTLS（%s）\n", anyTLSStatus)
 		if changed {
-			fmt.Fprintln(output, "  0. 保存草稿、应用服务并返回主菜单")
-		} else {
-			fmt.Fprintln(output, "  0. 返回主菜单")
+			fmt.Fprintln(output, "  4. 保存草稿、应用服务并返回主菜单")
+			fmt.Fprintln(output, "  5. 删除草稿并返回主菜单")
 		}
+		fmt.Fprintln(output, "  0. 返回主菜单")
 		choice, err := prompter.ask("请选择：")
 		if err != nil {
 			return model.State{}, false, err
 		}
 		if choice == "0" {
-			return candidate, changed, nil
+			if !changed {
+				return state, false, nil
+			}
+			action, err := prompter.ask("当前已经设置了草稿：1 保存并应用服务  2 删除草稿  0 继续编辑：")
+			if err != nil {
+				return model.State{}, false, err
+			}
+			switch action {
+			case "1":
+				return candidate, true, nil
+			case "2":
+				fmt.Fprintln(output, "草稿已删除，已生效服务保持不变。")
+				return state, false, nil
+			case "", "0":
+				continue
+			default:
+				fmt.Fprintln(output, "无效选择，请继续编辑或再次选择 0 返回。")
+				continue
+			}
+		}
+		if changed && choice == "4" {
+			return candidate, true, nil
+		}
+		if changed && choice == "5" {
+			fmt.Fprintln(output, "草稿已删除，已生效服务保持不变。")
+			return state, false, nil
 		}
 		var didChange bool
 		switch choice {
@@ -110,7 +135,7 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 				return model.State{}, false, err
 			}
 			changed = true
-			fmt.Fprintln(output, "⚠ 修改已暂存，服务尚未变更；请选择“0. 保存草稿、应用服务并返回主菜单”。")
+			fmt.Fprintln(output, "⚠ 修改已暂存，服务尚未变更；可选择 4 保存应用、5 删除草稿，或 0 返回时再决定。")
 		}
 	}
 }
