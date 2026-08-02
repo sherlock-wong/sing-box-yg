@@ -21,15 +21,9 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 	changed := false
 	for {
 		fmt.Fprintln(output, "\nRealm 端口转发（每条规则同时转发 TCP + UDP）")
-		if len(candidate.Rules) == 0 {
-			fmt.Fprintln(output, "  当前没有规则")
-		} else {
-			for _, rule := range candidate.Rules {
-				fmt.Fprintf(output, "  %s：%s → %s\n", rule.ID, endpoint(rule.ListenHost, rule.ListenPort), endpoint(rule.RemoteHost, rule.RemotePort))
-			}
-		}
-		fmt.Fprintln(output, "  1. 添加规则")
-		fmt.Fprintln(output, "  2. 删除规则")
+		fmt.Fprintln(output, "  1. 查看当前规则")
+		fmt.Fprintln(output, "  2. 添加规则")
+		fmt.Fprintln(output, "  3. 删除规则")
 		fmt.Fprintln(output, "  0. 返回并应用")
 		fmt.Fprint(output, "请选择：")
 		if !input.Scan() {
@@ -37,6 +31,8 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 		}
 		switch strings.TrimSpace(input.Text()) {
 		case "1":
+			showRealmRules(output, candidate.Rules)
+		case "2":
 			rule, err := promptRealmRule(input, output)
 			if err != nil {
 				fmt.Fprintln(output, "无效规则：", err)
@@ -49,23 +45,25 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 				continue
 			}
 			changed = true
-		case "2":
-			fmt.Fprint(output, "输入规则 ID：")
+		case "3":
+			if len(candidate.Rules) == 0 {
+				fmt.Fprintln(output, "当前没有可删除的规则。")
+				continue
+			}
+			showRealmRules(output, candidate.Rules)
+			fmt.Fprint(output, "选择要删除的规则编号（输入 0 取消）：")
 			if !input.Scan() {
 				return state, false, input.Err()
 			}
-			id := strings.TrimSpace(input.Text())
-			index := -1
-			for current, rule := range candidate.Rules {
-				if rule.ID == id {
-					index = current
-					break
-				}
-			}
-			if index < 0 {
-				fmt.Fprintln(output, "未找到该规则。")
+			selection, err := strconv.Atoi(strings.TrimSpace(input.Text()))
+			if err != nil || selection < 0 || selection > len(candidate.Rules) {
+				fmt.Fprintln(output, "规则编号无效。")
 				continue
 			}
+			if selection == 0 {
+				continue
+			}
+			index := selection - 1
 			candidate.Rules = append(candidate.Rules[:index], candidate.Rules[index+1:]...)
 			changed = true
 		case "0":
@@ -73,6 +71,17 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 		default:
 			fmt.Fprintln(output, "无效选择。")
 		}
+	}
+}
+
+func showRealmRules(output io.Writer, rules []realm.Rule) {
+	if len(rules) == 0 {
+		fmt.Fprintln(output, "\n当前没有 Realm 转发规则。")
+		return
+	}
+	fmt.Fprintln(output, "\n当前 Realm 转发规则：")
+	for index, rule := range rules {
+		fmt.Fprintf(output, "  %d. %s → %s（%s）\n", index+1, endpoint(rule.ListenHost, rule.ListenPort), endpoint(rule.RemoteHost, rule.RemotePort), rule.ID)
 	}
 }
 
