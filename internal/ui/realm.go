@@ -21,17 +21,24 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 	changed := false
 	for {
 		fmt.Fprintln(output, "\nRealm 端口转发（每条规则同时转发 TCP + UDP）")
+		if changed {
+			fmt.Fprintln(output, "  ⚠ 当前显示的是未保存草稿，Realm 服务和防火墙规则尚未变更。")
+		}
 		fmt.Fprintln(output, "  1. 查看当前规则")
 		fmt.Fprintln(output, "  2. 添加规则")
 		fmt.Fprintln(output, "  3. 删除规则")
-		fmt.Fprintln(output, "  0. 返回并应用")
+		if changed {
+			fmt.Fprintln(output, "  4. 保存草稿、应用规则并返回主菜单")
+			fmt.Fprintln(output, "  5. 删除草稿并返回主菜单")
+		}
+		fmt.Fprintln(output, "  0. 返回主菜单")
 		fmt.Fprint(output, "请选择：")
 		if !input.Scan() {
 			return state, false, input.Err()
 		}
 		switch strings.TrimSpace(input.Text()) {
 		case "1":
-			showRealmRules(output, candidate.Rules)
+			showRealmRules(output, candidate.Rules, changed)
 		case "2":
 			rule, err := promptRealmRule(input, output)
 			if err != nil {
@@ -45,12 +52,13 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 				continue
 			}
 			changed = true
+			fmt.Fprintln(output, "⚠ 规则已暂存，尚未写入 Realm 或 UFW；可选择 4 保存应用、5 删除草稿，或 0 返回时再决定。")
 		case "3":
 			if len(candidate.Rules) == 0 {
 				fmt.Fprintln(output, "当前没有可删除的规则。")
 				continue
 			}
-			showRealmRules(output, candidate.Rules)
+			showRealmRules(output, candidate.Rules, changed)
 			fmt.Fprint(output, "选择要删除的规则编号（输入 0 取消）：")
 			if !input.Scan() {
 				return state, false, input.Err()
@@ -66,20 +74,57 @@ func EditRealm(ctx context.Context, input *bufio.Scanner, output io.Writer, stat
 			index := selection - 1
 			candidate.Rules = append(candidate.Rules[:index], candidate.Rules[index+1:]...)
 			changed = true
+			fmt.Fprintln(output, "⚠ 删除操作已暂存，尚未写入 Realm 或 UFW；可选择 4 保存应用、5 删除草稿，或 0 返回时再决定。")
+		case "4":
+			if changed {
+				return candidate, true, nil
+			}
+			fmt.Fprintln(output, "当前没有草稿需要保存。")
+		case "5":
+			if changed {
+				fmt.Fprintln(output, "草稿已删除，已生效的 Realm 规则和防火墙保持不变。")
+				return state, false, nil
+			}
+			fmt.Fprintln(output, "当前没有草稿需要删除。")
 		case "0":
-			return candidate, changed, nil
+			if !changed {
+				return state, false, nil
+			}
+			fmt.Fprint(output, "当前已经设置了草稿：1 保存并应用规则  2 删除草稿  0 继续编辑：")
+			if !input.Scan() {
+				return state, false, input.Err()
+			}
+			switch strings.TrimSpace(input.Text()) {
+			case "1":
+				return candidate, true, nil
+			case "2":
+				fmt.Fprintln(output, "草稿已删除，已生效的 Realm 规则和防火墙保持不变。")
+				return state, false, nil
+			case "", "0":
+				continue
+			default:
+				fmt.Fprintln(output, "无效选择，请继续编辑或再次选择 0 返回。")
+			}
 		default:
 			fmt.Fprintln(output, "无效选择。")
 		}
 	}
 }
 
-func showRealmRules(output io.Writer, rules []realm.Rule) {
+func showRealmRules(output io.Writer, rules []realm.Rule, draft bool) {
 	if len(rules) == 0 {
-		fmt.Fprintln(output, "\n当前没有 Realm 转发规则。")
+		if draft {
+			fmt.Fprintln(output, "\n草稿中没有 Realm 转发规则（尚未生效）。")
+		} else {
+			fmt.Fprintln(output, "\n当前没有 Realm 转发规则。")
+		}
 		return
 	}
-	fmt.Fprintln(output, "\n当前 Realm 转发规则：")
+	if draft {
+		fmt.Fprintln(output, "\nRealm 转发规则草稿（尚未生效）：")
+	} else {
+		fmt.Fprintln(output, "\n当前 Realm 转发规则：")
+	}
 	for index, rule := range rules {
 		fmt.Fprintf(output, "  %d. %s → %s（%s）\n", index+1, endpoint(rule.ListenHost, rule.ListenPort), endpoint(rule.RemoteHost, rule.RemotePort), rule.ID)
 	}
