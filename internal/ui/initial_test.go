@@ -71,7 +71,7 @@ func TestEditProtocolsMakesCoreChangeExplicitlyPendingUntilSaved(t *testing.T) {
 	if state.Protocols.VLESSReality.Engine != model.RealityEngineSingBox {
 		t.Fatal("editor changed original state")
 	}
-	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "保存草稿并立即应用到服务") || !strings.Contains(output.String(), "草稿：已启用") || !strings.Contains(output.String(), "服务仍在使用旧配置") {
+	if !strings.Contains(output.String(), "修改已暂存") || !strings.Contains(output.String(), "保存草稿、应用服务并返回主菜单") || !strings.Contains(output.String(), "草稿：已启用") || !strings.Contains(output.String(), "服务仍在使用旧配置") {
 		t.Fatalf("missing save guidance: %q", output.String())
 	}
 }

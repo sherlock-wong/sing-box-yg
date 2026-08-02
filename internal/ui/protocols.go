@@ -78,7 +78,7 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 		fmt.Fprintf(output, "  2. Hysteria2（%s）\n", hy2Status)
 		fmt.Fprintf(output, "  3. AnyTLS（%s）\n", anyTLSStatus)
 		if changed {
-			fmt.Fprintln(output, "  0. 保存草稿并立即应用到服务")
+			fmt.Fprintln(output, "  0. 保存草稿、应用服务并返回主菜单")
 		} else {
 			fmt.Fprintln(output, "  0. 返回主菜单")
 		}
@@ -110,7 +110,7 @@ func EditProtocols(ctx context.Context, scanner *bufio.Scanner, output io.Writer
 				return model.State{}, false, err
 			}
 			changed = true
-			fmt.Fprintln(output, "⚠ 修改已暂存，服务尚未变更；请选择“0. 保存草稿并立即应用到服务”。")
+			fmt.Fprintln(output, "⚠ 修改已暂存，服务尚未变更；请选择“0. 保存草稿、应用服务并返回主菜单”。")
 		}
 	}
 }
