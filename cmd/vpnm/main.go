@@ -271,12 +271,13 @@ func webMenu(scanner *bufio.Scanner, stateDirectory string) {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 				continue
 			}
-			candidateState, candidateWeb, candidateKomari, changed, updateRequested, err := ui.EditKomari(context.Background(), scanner, os.Stdout, stateDirectory, state, webState, komariState)
+			nginxInstalled := (app.NginxInstaller{}).Installed(context.Background())
+			candidateState, candidateWeb, candidateKomari, changed, updateRequested, err := ui.EditKomari(context.Background(), scanner, os.Stdout, stateDirectory, state, webState, komariState, nginxInstalled)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 				continue
 			}
-			if changed && candidateKomari.Enabled && candidateKomari.Mode == "domain" && !(app.NginxInstaller{}).Installed(context.Background()) {
+			if changed && candidateKomari.Enabled && candidateKomari.Mode == "domain" && !nginxInstalled {
 				fmt.Fprintln(os.Stderr, "vpnm: 未安装 Nginx；请先在本菜单选择“1. 安装 Nginx”，再配置域名 HTTPS 方式。")
 				continue
 			}

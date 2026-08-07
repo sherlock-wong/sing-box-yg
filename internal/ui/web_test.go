@@ -58,7 +58,7 @@ func TestEditKomariDomainCreatesLinkedProxy(t *testing.T) {
 	state := webTestState(t, "status.example.com")
 	input := bufio.NewScanner(strings.NewReader("2\n2\nstatus.example.com\n49502\n49503\n5\n"))
 	var output strings.Builder
-	deployment, candidateWeb, candidateKomari, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), state, web.NewState(), komari.NewState())
+	deployment, candidateWeb, candidateKomari, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), state, web.NewState(), komari.NewState(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,11 +74,23 @@ func TestEditKomariDomainCreatesLinkedProxy(t *testing.T) {
 func TestEditKomariRequestsLockedBinaryUpdate(t *testing.T) {
 	input := bufio.NewScanner(strings.NewReader("4\n"))
 	var output strings.Builder
-	_, _, _, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState())
+	_, _, _, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changed || !updateRequested {
 		t.Fatalf("changed=%v updateRequested=%v", changed, updateRequested)
+	}
+}
+
+func TestEditKomariRejectsDomainModeBeforeDomainPromptWhenNginxMissing(t *testing.T) {
+	input := bufio.NewScanner(strings.NewReader("2\n2\n0\n"))
+	var output strings.Builder
+	_, _, _, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || updateRequested || !strings.Contains(output.String(), "未安装 Nginx") || strings.Contains(output.String(), "访问域名") {
+		t.Fatalf("changed=%v update=%v output=%s", changed, updateRequested, output.String())
 	}
 }

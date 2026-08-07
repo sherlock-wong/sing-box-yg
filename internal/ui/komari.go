@@ -16,7 +16,7 @@ import (
 
 // EditKomari prepares Komari and, for domain mode, its linked generic Nginx
 // proxy. Nothing starts or writes until the caller applies the returned draft.
-func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, stateDirectory string, deployment model.State, webState web.State, state komari.State) (model.State, web.State, komari.State, bool, bool, error) {
+func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, stateDirectory string, deployment model.State, webState web.State, state komari.State, nginxInstalled bool) (model.State, web.State, komari.State, bool, bool, error) {
 	prompter := &prompt{scanner: input, output: output}
 	candidateDeployment := deployment
 	candidateWeb := web.State{Schema: webState.Schema, Proxies: append([]web.Proxy(nil), webState.Proxies...)}
@@ -44,7 +44,7 @@ func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, sta
 		case "1":
 			showKomari(output, candidate, candidateWeb, changed)
 		case "2":
-			nextDeployment, nextWeb, next, accepted, err := configureKomari(ctx, prompter, stateDirectory, candidateDeployment, candidateWeb, candidate)
+			nextDeployment, nextWeb, next, accepted, err := configureKomari(ctx, prompter, stateDirectory, candidateDeployment, candidateWeb, candidate, nginxInstalled)
 			if err != nil {
 				fmt.Fprintln(output, "无法配置 Komari：", err)
 				continue
@@ -101,7 +101,7 @@ func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, sta
 	}
 }
 
-func configureKomari(ctx context.Context, prompter *prompt, stateDirectory string, deployment model.State, webState web.State, current komari.State) (model.State, web.State, komari.State, bool, error) {
+func configureKomari(ctx context.Context, prompter *prompt, stateDirectory string, deployment model.State, webState web.State, current komari.State, nginxInstalled bool) (model.State, web.State, komari.State, bool, error) {
 	choice, err := prompter.ask("访问方式：1 直接用 IP:端口访问  2 域名 HTTPS 反向代理  0 取消：")
 	if err != nil || choice == "0" || choice == "" {
 		return deployment, webState, current, false, err
@@ -118,6 +118,10 @@ func configureKomari(ctx context.Context, prompter *prompt, stateDirectory strin
 		}
 		return deployment, baseWeb, komari.State{Schema: komari.Schema, Enabled: true, Mode: komari.ModeDirect, ListenHost: "0.0.0.0", ListenPort: port}, true, nil
 	case "2":
+		if !nginxInstalled {
+			fmt.Fprintln(prompter.output, "未安装 Nginx；请先返回“Web 服务与反向代理”菜单，选择“1. 安装 Nginx”，再配置域名 HTTPS 方式。")
+			return deployment, webState, current, false, nil
+		}
 		domain, err := prompter.ask("访问域名（填写自己控制的域名；输入 0 取消）：")
 		if err != nil || domain == "0" || domain == "" {
 			return deployment, webState, current, false, err
