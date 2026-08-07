@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -20,7 +21,10 @@ import (
 const DefaultWebStateFile = "web.json"
 const DefaultNginxVPNMConfig = "/etc/nginx/conf.d/vps-net-manager.conf"
 
-type NginxInstaller struct{ Runner platform.CommandRunner }
+type NginxInstaller struct {
+	Runner     platform.CommandRunner
+	ConfigPath string
+}
 
 func (installer NginxInstaller) Installed(ctx context.Context) bool {
 	runner := installer.Runner
@@ -46,6 +50,60 @@ func (installer NginxInstaller) Install(ctx context.Context) error {
 		return fmt.Errorf("install nginx: %w", err)
 	}
 	return nil
+}
+
+// UnmanagedConfigFiles lists active site snippets outside VPNM's dedicated
+// include. It is presented before package removal, not used to delete them.
+func (installer NginxInstaller) UnmanagedConfigFiles() ([]string, error) {
+	managed := filepath.Clean(installer.configPath())
+	var files []string
+	for _, directory := range []string{"/etc/nginx/sites-enabled", "/etc/nginx/conf.d"} {
+		entries, err := os.ReadDir(directory)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read Nginx configuration directory %s: %w", directory, err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if filepath.Clean(path) != managed {
+				files = append(files, path)
+			}
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// Uninstall removes the nginx packages installed by VPNM's supported APT
+// workflow. The caller must obtain explicit confirmation after displaying
+// UnmanagedConfigFiles; unrelated site snippets are never deleted here.
+func (installer NginxInstaller) Uninstall(ctx context.Context) error {
+	runner := installer.Runner
+	if runner == nil {
+		runner = platform.SystemRunner{}
+	}
+	if !installer.Installed(ctx) {
+		return fmt.Errorf("Nginx is not installed")
+	}
+	if _, err := runner.Run(ctx, platform.Command{Path: "systemctl", Args: []string{"disable", "--now", "nginx"}, Timeout: 45 * time.Second}); err != nil {
+		return fmt.Errorf("stop nginx: %w", err)
+	}
+	if err := os.Remove(installer.configPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove VPNM nginx configuration: %w", err)
+	}
+	if _, err := runner.Run(ctx, platform.Command{Path: "apt-get", Args: []string{"purge", "-y", "nginx", "nginx-common"}, Timeout: 5 * time.Minute}); err != nil {
+		return fmt.Errorf("purge nginx: %w", err)
+	}
+	return nil
+}
+
+func (installer NginxInstaller) configPath() string {
+	if installer.ConfigPath != "" {
+		return installer.ConfigPath
+	}
+	return DefaultNginxVPNMConfig
 }
 
 type WebApplyOptions struct {
@@ -122,6 +180,16 @@ func (options WebApplyOptions) Apply(ctx context.Context, previous, candidate we
 	runner := options.Runner
 	if runner == nil {
 		runner = platform.SystemRunner{}
+	}
+	nginx := NginxInstaller{Runner: runner}
+	if !nginx.Installed(ctx) {
+		if len(candidate.Proxies) == 0 {
+			if err := options.Firewall.Finalize(ctx, previousRules, rules); err != nil {
+				return joinFailure(fmt.Errorf("finalize web firewall rules: %w", err), rollbackFiles(ctx), rollbackFW(ctx))
+			}
+			return nil
+		}
+		return joinFailure(fmt.Errorf("Nginx is not installed"), rollbackFiles(ctx), rollbackFW(ctx))
 	}
 	if _, err := runner.Run(ctx, platform.Command{Path: "nginx", Args: []string{"-t"}, Timeout: 30 * time.Second}); err != nil {
 		return joinFailure(fmt.Errorf("validate nginx configuration: %w", err), rollbackFiles(ctx), rollbackFW(ctx))

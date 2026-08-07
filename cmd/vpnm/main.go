@@ -20,6 +20,7 @@ import (
 	"github.com/sherlock-wong/vps-net-manager/internal/reality"
 	"github.com/sherlock-wong/vps-net-manager/internal/subscription"
 	"github.com/sherlock-wong/vps-net-manager/internal/ui"
+	"github.com/sherlock-wong/vps-net-manager/internal/web"
 	"golang.org/x/term"
 )
 
@@ -218,6 +219,8 @@ func webMenu(scanner *bufio.Scanner, stateDirectory string) {
 		fmt.Println("  1. 安装 Nginx")
 		fmt.Println("  2. 管理 HTTPS 反向代理")
 		fmt.Println("  3. Komari 监控")
+		fmt.Println("  4. 移除全部 VPNM 反向代理规则")
+		fmt.Println("  5. 卸载 Nginx")
 		fmt.Println("  0. 返回主菜单")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -272,7 +275,7 @@ func webMenu(scanner *bufio.Scanner, stateDirectory string) {
 				continue
 			}
 			nginxInstalled := (app.NginxInstaller{}).Installed(context.Background())
-			candidateState, candidateWeb, candidateKomari, changed, updateRequested, err := ui.EditKomari(context.Background(), scanner, os.Stdout, stateDirectory, state, webState, komariState, nginxInstalled)
+			candidateState, candidateWeb, candidateKomari, changed, updateRequested, uninstallRequested, deleteKomariData, err := ui.EditKomari(context.Background(), scanner, os.Stdout, stateDirectory, state, webState, komariState, nginxInstalled)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "vpnm:", err)
 				continue
@@ -281,7 +284,25 @@ func webMenu(scanner *bufio.Scanner, stateDirectory string) {
 				fmt.Fprintln(os.Stderr, "vpnm: 未安装 Nginx；请先在本菜单选择“1. 安装 Nginx”，再配置域名 HTTPS 方式。")
 				continue
 			}
-			if !changed && !updateRequested {
+			if !changed && !updateRequested && !uninstallRequested {
+				continue
+			}
+			if uninstallRequested {
+				if !reflect.DeepEqual(webState, candidateWeb) {
+					if err := app.DefaultWebApplyOptions(stateDirectory).Apply(context.Background(), webState, candidateWeb, state.Certificates); err != nil {
+						fmt.Fprintln(os.Stderr, "vpnm: 移除 Komari 反向代理失败，已取消卸载：", err)
+						continue
+					}
+				}
+				if err := app.UninstallKomari(context.Background(), stateDirectory, "/etc/systemd/system", komariState, deleteKomariData, nil, app.UFWController{}); err != nil {
+					fmt.Fprintln(os.Stderr, "vpnm:", err)
+					continue
+				}
+				if deleteKomariData {
+					fmt.Println("Komari 已彻底卸载，数据已删除。")
+				} else {
+					fmt.Println("Komari 已彻底卸载，数据保留在 /etc/vps-net-manager/komari。")
+				}
 				continue
 			}
 			host, err := platform.InspectSupportedHost()
@@ -318,12 +339,95 @@ func webMenu(scanner *bufio.Scanner, stateDirectory string) {
 				}
 			}
 			fmt.Println("Komari 已成功应用。首次管理员账号信息请执行：journalctl -u vps-net-manager-komari --no-pager -n 80")
+		case "4":
+			removeAllWebProxies(scanner, stateDirectory, state)
+		case "5":
+			uninstallNginxMenu(scanner, stateDirectory, state)
 		case "0":
 			return
 		default:
 			fmt.Println("无效选择。")
 		}
 	}
+}
+
+func removeAllWebProxies(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	webState, err := app.LoadWebStateOrEmpty(filepath.Join(stateDirectory, app.DefaultWebStateFile), state.Certificates)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	if len(webState.Proxies) == 0 {
+		fmt.Println("当前没有 VPNM 管理的反向代理规则。")
+		return
+	}
+	if komariState, err := app.LoadKomariStateOrEmpty(filepath.Join(stateDirectory, app.DefaultKomariStateFile)); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	} else if komariState.Enabled && komariState.Mode == "domain" {
+		fmt.Println("Komari 当前使用域名 HTTPS 反向代理；请先在 Komari 菜单停止它或改为 IP:端口访问，再移除全部反代规则。")
+		return
+	}
+	value, ok := promptMenuValue(scanner, fmt.Sprintf("将移除 %d 条 VPNM 反向代理规则并关闭对应 UFW 端口。输入 DELETE 确认：", len(webState.Proxies)))
+	if !ok || value != "DELETE" {
+		fmt.Println("已取消。")
+		return
+	}
+	if err := app.DefaultWebApplyOptions(stateDirectory).Apply(context.Background(), webState, web.NewState(), state.Certificates); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("已移除全部 VPNM 反向代理规则；Nginx 软件包和其他站点配置保持不变。")
+}
+
+func uninstallNginxMenu(scanner *bufio.Scanner, stateDirectory string, state model.State) {
+	installer := app.NginxInstaller{}
+	if !installer.Installed(context.Background()) {
+		fmt.Println("Nginx 尚未安装。")
+		return
+	}
+	komariState, err := app.LoadKomariStateOrEmpty(filepath.Join(stateDirectory, app.DefaultKomariStateFile))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	if komariState.Enabled && komariState.Mode == "domain" {
+		fmt.Println("Komari 当前使用域名 HTTPS 反向代理；请先在 Komari 菜单停止它或改为 IP:端口访问，再卸载 Nginx。")
+		return
+	}
+	webState, err := app.LoadWebStateOrEmpty(filepath.Join(stateDirectory, app.DefaultWebStateFile), state.Certificates)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	configs, err := installer.UnmanagedConfigFiles()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("\n即将停止并通过 APT purge 卸载 Nginx 与 nginx-common。VPNM 的反向代理规则也会被移除。")
+	if len(configs) > 0 {
+		fmt.Println("检测到以下非 VPNM Nginx 配置；它们不会由 VPNM 删除，但相关站点会因 Nginx 被卸载而停止：")
+		for _, path := range configs {
+			fmt.Println("  -", path)
+		}
+	}
+	value, ok := promptMenuValue(scanner, "输入 UNINSTALL NGINX 确认：")
+	if !ok || value != "UNINSTALL NGINX" {
+		fmt.Println("已取消。")
+		return
+	}
+	if len(webState.Proxies) > 0 {
+		if err := app.DefaultWebApplyOptions(stateDirectory).Apply(context.Background(), webState, web.NewState(), state.Certificates); err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm: 移除 VPNM 反向代理失败，已取消卸载 Nginx：", err)
+			return
+		}
+	}
+	if err := installer.Uninstall(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "vpnm:", err)
+		return
+	}
+	fmt.Println("Nginx 已卸载；VPNM 反向代理规则也已移除。")
 }
 
 func showCurrentConfiguration(state model.State) {

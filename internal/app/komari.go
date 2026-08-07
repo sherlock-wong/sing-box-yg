@@ -212,6 +212,48 @@ func RestartKomari(ctx context.Context, state komari.State, runner platform.Comm
 	return nil
 }
 
+// UninstallKomari removes only the Komari resources owned by VPNM. Callers
+// decide whether the persistent Komari data directory should be retained.
+func UninstallKomari(ctx context.Context, stateDirectory, unitDirectory string, state komari.State, deleteData bool, runner platform.CommandRunner, firewall FirewallController) error {
+	if !safeOwnedDirectory(stateDirectory) || unitDirectory == "" || firewall == nil {
+		return fmt.Errorf("unsafe Komari uninstall dependencies")
+	}
+	if runner == nil {
+		runner = platform.SystemRunner{}
+	}
+	lock, err := platform.AcquireLock(ctx, filepath.Join(stateDirectory, "state.lock"))
+	if err != nil {
+		return fmt.Errorf("acquire state lock: %w", err)
+	}
+	defer lock.Release()
+	if err := stopDisable(ctx, runner, DefaultKomariService); err != nil {
+		return fmt.Errorf("stop Komari: %w", err)
+	}
+	if err := firewall.Finalize(ctx, komariFirewallRules(state), nil); err != nil {
+		return fmt.Errorf("remove Komari firewall rules: %w", err)
+	}
+	for _, path := range []string{
+		filepath.Join(unitDirectory, DefaultKomariService),
+		filepath.Join(stateDirectory, "bin", "komari"),
+		filepath.Join(stateDirectory, "bin", "komari.json"),
+		filepath.Join(stateDirectory, DefaultKomariStateFile),
+	} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove Komari resource %s: %w", path, err)
+		}
+	}
+	if deleteData {
+		dataDirectory := filepath.Join(stateDirectory, "komari")
+		if err := os.RemoveAll(dataDirectory); err != nil {
+			return fmt.Errorf("remove Komari data: %w", err)
+		}
+	}
+	if _, err := runner.Run(ctx, platform.Command{Path: "systemctl", Args: []string{"daemon-reload"}, Timeout: 30 * time.Second}); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+	return nil
+}
+
 func komariUnit(stateDirectory string, state komari.State) string {
 	host, port := state.ListenHost, state.ListenPort
 	if host == "" {

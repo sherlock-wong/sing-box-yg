@@ -56,13 +56,13 @@ func TestEditWebAddsProxyWithMatchingCertificate(t *testing.T) {
 
 func TestEditKomariDomainCreatesLinkedProxy(t *testing.T) {
 	state := webTestState(t, "status.example.com")
-	input := bufio.NewScanner(strings.NewReader("2\n2\nstatus.example.com\n49502\n49503\n5\n"))
+	input := bufio.NewScanner(strings.NewReader("2\n2\nstatus.example.com\n49502\n49503\n6\n"))
 	var output strings.Builder
-	deployment, candidateWeb, candidateKomari, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), state, web.NewState(), komari.NewState(), true)
+	deployment, candidateWeb, candidateKomari, changed, updateRequested, uninstallRequested, _, err := EditKomari(context.Background(), input, &output, t.TempDir(), state, web.NewState(), komari.NewState(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updateRequested || !changed || deployment.Certificates["test-cert"].Name != "test" || candidateKomari.Mode != komari.ModeDomain || candidateKomari.ListenHost != "127.0.0.1" || len(candidateWeb.Proxies) != 1 {
+	if updateRequested || uninstallRequested || !changed || deployment.Certificates["test-cert"].Name != "test" || candidateKomari.Mode != komari.ModeDomain || candidateKomari.ListenHost != "127.0.0.1" || len(candidateWeb.Proxies) != 1 {
 		t.Fatalf("changed=%v komari=%+v web=%+v", changed, candidateKomari, candidateWeb)
 	}
 	proxy := candidateWeb.Proxies[0]
@@ -74,23 +74,35 @@ func TestEditKomariDomainCreatesLinkedProxy(t *testing.T) {
 func TestEditKomariRequestsLockedBinaryUpdate(t *testing.T) {
 	input := bufio.NewScanner(strings.NewReader("4\n"))
 	var output strings.Builder
-	_, _, _, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), true)
+	_, _, _, changed, updateRequested, uninstallRequested, _, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed || !updateRequested {
-		t.Fatalf("changed=%v updateRequested=%v", changed, updateRequested)
+	if changed || !updateRequested || uninstallRequested {
+		t.Fatalf("changed=%v updateRequested=%v uninstallRequested=%v", changed, updateRequested, uninstallRequested)
 	}
 }
 
 func TestEditKomariRejectsDomainModeBeforeDomainPromptWhenNginxMissing(t *testing.T) {
 	input := bufio.NewScanner(strings.NewReader("2\n2\n0\n"))
 	var output strings.Builder
-	_, _, _, changed, updateRequested, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), false)
+	_, _, _, changed, updateRequested, uninstallRequested, _, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed || updateRequested || !strings.Contains(output.String(), "未安装 Nginx") || strings.Contains(output.String(), "访问域名") {
-		t.Fatalf("changed=%v update=%v output=%s", changed, updateRequested, output.String())
+	if changed || updateRequested || uninstallRequested || !strings.Contains(output.String(), "未安装 Nginx") || strings.Contains(output.String(), "访问域名") {
+		t.Fatalf("changed=%v update=%v uninstall=%v output=%s", changed, updateRequested, uninstallRequested, output.String())
+	}
+}
+
+func TestEditKomariRequestsUninstallWithDataDeletion(t *testing.T) {
+	input := bufio.NewScanner(strings.NewReader("5\n2\n"))
+	var output strings.Builder
+	_, _, _, changed, updateRequested, uninstallRequested, deleteData, err := EditKomari(context.Background(), input, &output, t.TempDir(), model.NewState(), web.NewState(), komari.NewState(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || updateRequested || !uninstallRequested || !deleteData {
+		t.Fatalf("changed=%v update=%v uninstall=%v deleteData=%v", changed, updateRequested, uninstallRequested, deleteData)
 	}
 }

@@ -16,7 +16,7 @@ import (
 
 // EditKomari prepares Komari and, for domain mode, its linked generic Nginx
 // proxy. Nothing starts or writes until the caller applies the returned draft.
-func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, stateDirectory string, deployment model.State, webState web.State, state komari.State, nginxInstalled bool) (model.State, web.State, komari.State, bool, bool, error) {
+func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, stateDirectory string, deployment model.State, webState web.State, state komari.State, nginxInstalled bool) (model.State, web.State, komari.State, bool, bool, bool, bool, error) {
 	prompter := &prompt{scanner: input, output: output}
 	candidateDeployment := deployment
 	candidateWeb := web.State{Schema: webState.Schema, Proxies: append([]web.Proxy(nil), webState.Proxies...)}
@@ -31,14 +31,15 @@ func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, sta
 		fmt.Fprintln(output, "  2. 配置并启动 Komari")
 		fmt.Fprintln(output, "  3. 停止 Komari 并移除其反向代理")
 		fmt.Fprintln(output, "  4. 更新 Komari 程序（使用当前管理器锁定版本）")
+		fmt.Fprintln(output, "  5. 彻底卸载 Komari")
 		if changed {
-			fmt.Fprintln(output, "  5. 保存草稿并应用")
-			fmt.Fprintln(output, "  6. 删除草稿并返回")
+			fmt.Fprintln(output, "  6. 保存草稿并应用")
+			fmt.Fprintln(output, "  7. 删除草稿并返回")
 		}
 		fmt.Fprintln(output, "  0. 返回 Web 服务菜单")
 		fmt.Fprint(output, "请选择：")
 		if !input.Scan() {
-			return deployment, webState, state, false, false, input.Err()
+			return deployment, webState, state, false, false, false, false, input.Err()
 		}
 		switch strings.TrimSpace(input.Text()) {
 		case "1":
@@ -53,43 +54,62 @@ func EditKomari(ctx context.Context, input *bufio.Scanner, output io.Writer, sta
 				continue
 			}
 			candidateDeployment, candidateWeb, candidate, changed = nextDeployment, nextWeb, next, true
-			fmt.Fprintln(output, "⚠ Komari 配置已暂存，尚未写入服务、Nginx 或 UFW；可选择 5 保存应用、6 删除草稿，或 0 返回时再决定。")
+			fmt.Fprintln(output, "⚠ Komari 配置已暂存，尚未写入服务、Nginx 或 UFW；可选择 6 保存应用、7 删除草稿，或 0 返回时再决定。")
 		case "3":
 			candidateWeb = removeKomariProxy(candidateWeb, candidate.ProxyID)
 			candidate = komari.NewState()
 			changed = true
-			fmt.Fprintln(output, "⚠ 停止操作已暂存，尚未停止服务或修改 Nginx/UFW；可选择 5 保存应用、6 删除草稿，或 0 返回时再决定。")
+			fmt.Fprintln(output, "⚠ 停止操作已暂存，尚未停止服务或修改 Nginx/UFW；可选择 6 保存应用、7 删除草稿，或 0 返回时再决定。")
 		case "4":
 			if changed {
 				fmt.Fprintln(output, "请先保存或删除当前草稿，再更新 Komari 程序。")
 				continue
 			}
-			return deployment, webState, state, false, true, nil
+			return deployment, webState, state, false, true, false, false, nil
 		case "5":
 			if changed {
-				return candidateDeployment, candidateWeb, candidate, true, false, nil
+				fmt.Fprintln(output, "请先保存或删除当前草稿，再彻底卸载 Komari。")
+				continue
 			}
-			fmt.Fprintln(output, "当前没有草稿需要保存。")
+			choice, err := prompter.ask("1 保留 Komari 数据  2 删除 Komari 数据  0 取消：")
+			if err != nil {
+				return deployment, webState, state, false, false, false, false, err
+			}
+			switch choice {
+			case "1":
+				return deployment, removeKomariProxy(webState, state.ProxyID), state, false, false, true, false, nil
+			case "2":
+				return deployment, removeKomariProxy(webState, state.ProxyID), state, false, false, true, true, nil
+			case "", "0":
+				continue
+			default:
+				fmt.Fprintln(output, "无效选择。")
+			}
 		case "6":
 			if changed {
+				return candidateDeployment, candidateWeb, candidate, true, false, false, false, nil
+			}
+			fmt.Fprintln(output, "当前没有草稿需要保存。")
+		case "7":
+			if changed {
 				fmt.Fprintln(output, "草稿已删除，已生效的 Komari、Nginx 和防火墙保持不变。")
-				return deployment, webState, state, false, false, nil
+				return deployment, webState, state, false, false, false, false, nil
 			}
 			fmt.Fprintln(output, "当前没有草稿需要删除。")
 		case "0":
 			if !changed {
-				return deployment, webState, state, false, false, nil
+				return deployment, webState, state, false, false, false, false, nil
 			}
 			choice, err := prompter.ask("当前已经设置了草稿：1 保存并应用  2 删除草稿  0 继续编辑：")
 			if err != nil {
-				return deployment, webState, state, false, false, err
+				return deployment, webState, state, false, false, false, false, err
 			}
 			switch choice {
 			case "1":
-				return candidateDeployment, candidateWeb, candidate, true, false, nil
+				return candidateDeployment, candidateWeb, candidate, true, false, false, false, nil
 			case "2":
 				fmt.Fprintln(output, "草稿已删除，已生效的 Komari、Nginx 和防火墙保持不变。")
-				return deployment, webState, state, false, false, nil
+				return deployment, webState, state, false, false, false, false, nil
 			case "", "0":
 				continue
 			default:

@@ -41,7 +41,9 @@ VPNM 不兼容或迁移旧证书目录；服务使用的证书路径必须严格
 
 主菜单的“Web 服务与反向代理”提供独立的 Nginx 安装项，以及通用 HTTPS 反向代理管理。VPNM 只写入自己的 `/etc/nginx/conf.d/vps-net-manager.conf`，不会覆盖其他 Nginx 站点；每条规则可分别指定域名、Nginx HTTPS 监听端口、内部目标地址和端口。新增或更改规则时会从证书库自动匹配覆盖该域名的证书；无匹配证书时可在同一流程选择 ACME 申请或固定自签测试证书。规则会先通过 `nginx -t`，并仅为受管 HTTPS 端口添加 VPNM 标记的 UFW TCP 规则。
 
-Komari 是第一个受管 Web 服务。选择“直接用 IP:端口访问”时，Komari 监听 `0.0.0.0`，VPNM 仅开放这个 TCP 端口，不需要 Nginx；选择“域名 HTTPS 反向代理”时，Komari 仅监听 `127.0.0.1`，域名、证书、外部 HTTPS 端口与 WebSocket 反代均由上述通用反向代理管理。域名已被受管反代使用时会拒绝重复配置。Komari 菜单的“更新 Komari 程序”只会安装当前 `vm` 内置、已校验的固定版本；先运行 `vm update` 获取包含新锁定版本的管理器，再手动选择该项完成服务更新。
+Komari 是第一个受管 Web 服务。选择“直接用 IP:端口访问”时，Komari 监听 `0.0.0.0`，VPNM 仅开放这个 TCP 端口，不需要 Nginx；选择“域名 HTTPS 反向代理”时，Komari 仅监听 `127.0.0.1`，域名、证书、外部 HTTPS 端口与 WebSocket 反代均由上述通用反向代理管理。域名已被受管反代使用时会拒绝重复配置。Komari 菜单的“更新 Komari 程序”只会安装当前 `vm` 内置、已校验的固定版本；先运行 `vm update` 获取包含新锁定版本的管理器，再手动选择该项完成服务更新。“彻底卸载 Komari”会移除服务、二进制、状态、关联反代和标记端口规则，并可选择保留或删除 `/etc/vps-net-manager/komari` 数据。
+
+“移除全部 VPNM 反向代理规则”只清理 VPNM 的专属 include、状态和标记 UFW 端口，不会卸载 Nginx。“卸载 Nginx”会先展示 `sites-enabled` 与 `conf.d` 中的非 VPNM 配置，再要求输入 `UNINSTALL NGINX`；该操作通过 APT purge 移除 `nginx` 与 `nginx-common`，因此其他 Nginx 站点会停止，但 VPNM 不会主动删除它们的配置文件。
 
 ## BBR
 
