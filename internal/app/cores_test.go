@@ -27,11 +27,12 @@ func (transport archiveTransport) RoundTrip(request *http.Request) (*http.Respon
 func TestCoreInstallerAtomicallyInstallsVerifiedLockedBinaries(t *testing.T) {
 	singBox := tarGZ(t, "release/sing-box", []byte("sing-box-binary"))
 	xray := zipArchive(t, "xray", []byte("xray-binary"))
-	locks := dependency.Locks{SingBox: dependency.Core{Version: "1", Assets: map[string]dependency.Asset{}}, Xray: dependency.Core{Version: "2", Assets: map[string]dependency.Asset{}}, Realm: dependency.Core{Version: "3", Assets: map[string]dependency.Asset{}}}
+	locks := dependency.Locks{SingBox: dependency.Core{Version: "1", Assets: map[string]dependency.Asset{}}, Xray: dependency.Core{Version: "2", Assets: map[string]dependency.Asset{}}, Realm: dependency.Core{Version: "3", Assets: map[string]dependency.Asset{}}, Komari: dependency.Core{Version: "4", Assets: map[string]dependency.Asset{}}}
 	for _, architecture := range []string{"amd64", "arm64"} {
 		locks.SingBox.Assets[architecture] = dependency.Asset{URL: "https://downloads.example.test/sing-box-" + architecture, SHA256: digest(singBox), Archive: "tar.gz", Member: "release/sing-box"}
 		locks.Xray.Assets[architecture] = dependency.Asset{URL: "https://downloads.example.test/xray-" + architecture, SHA256: digest(xray), Archive: "zip", Member: "xray"}
 		locks.Realm.Assets[architecture] = dependency.Asset{URL: "https://downloads.example.test/realm-" + architecture, SHA256: digest(singBox), Archive: "tar.gz", Member: "release/sing-box"}
+		locks.Komari.Assets[architecture] = dependency.Asset{URL: "https://downloads.example.test/komari-" + architecture, SHA256: digest(singBox), Archive: "tar.gz", Member: "release/sing-box"}
 	}
 	root := t.TempDir()
 	installer := CoreInstaller{StateDirectory: root, Locks: locks, Client: &http.Client{Transport: archiveTransport{"https://downloads.example.test/sing-box-amd64": singBox, "https://downloads.example.test/xray-amd64": xray}}}

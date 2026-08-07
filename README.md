@@ -2,7 +2,7 @@
 
 VPS Net Manager 是面向个人 VPS 的 Go 网络服务管理器。生产入口只有 `/usr/local/bin/vm`；仓库 `main` 只保存源码，CI 成功后把可安装的 Linux 二进制发布到滚动的 `main-build` 分支。
 
-支持 Debian/Ubuntu、systemd、amd64/arm64，以及 Vless-Reality（Sing-box/Xray）、Hysteria2、AnyTLS、Realm、证书同步、Reality 扫描和原生 BBR。旧 Bash 版本不能迁移：请先用旧菜单卸载。
+支持 Debian/Ubuntu、systemd、amd64/arm64，以及 Vless-Reality（Sing-box/Xray）、Hysteria2、AnyTLS、Realm、证书同步、Reality 扫描、Nginx HTTPS 反向代理、Komari 监控和原生 BBR。旧 Bash 版本不能迁移：请先用旧菜单卸载。
 
 ## 安装
 

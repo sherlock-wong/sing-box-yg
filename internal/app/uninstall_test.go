@@ -42,7 +42,16 @@ func TestUninstallerRemovesOnlyProvidedVPNMPaths(t *testing.T) {
 	if _, err := os.Stat(binary); !os.IsNotExist(err) {
 		t.Fatalf("binary remains: %v", err)
 	}
-	if got := commands[len(commands)-1]; got != "daemon-reload" {
-		t.Fatalf("last command = %q", got)
+	if !containsCommand(commands, "daemon-reload") || !containsCommand(commands, "reload nginx") {
+		t.Fatalf("commands = %v", commands)
 	}
+}
+
+func containsCommand(commands []string, wanted string) bool {
+	for _, command := range commands {
+		if command == wanted {
+			return true
+		}
+	}
+	return false
 }

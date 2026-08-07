@@ -50,6 +50,23 @@
       }
     }
   },
+  "komari": {
+    "version": "1.4.2",
+    "assets": {
+      "amd64": {
+        "url": "https://github.com/komari-monitor/komari/releases/download/1.4.2/komari-linux-amd64",
+        "sha256": "cb475f2fea441922416146d20897b11e214c8cdff9e370ee176a4dbcef727fb4",
+        "archive": "raw",
+        "member": ""
+      },
+      "arm64": {
+        "url": "https://github.com/komari-monitor/komari/releases/download/1.4.2/komari-linux-arm64",
+        "sha256": "0066cbc23ff20495b22f7c7a4309b6504cb321444a405296939482ef1ac0f7c3",
+        "archive": "raw",
+        "member": ""
+      }
+    }
+  },
   "acme": {
     "commit": "2feb392bd0e3964d9bf68871ae804578d9d5ca80",
     "url": "https://raw.githubusercontent.com/acmesh-official/acme.sh/2feb392bd0e3964d9bf68871ae804578d9d5ca80/acme.sh",

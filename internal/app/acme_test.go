@@ -77,5 +77,5 @@ func TestUpdateCloudflareCredentials(t *testing.T) {
 func testLocksWithACME(address, checksum string) dependency.Locks {
 	asset := dependency.Asset{URL: "https://downloads.example.test/core", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Archive: "zip", Member: "core"}
 	assets := map[string]dependency.Asset{"amd64": asset, "arm64": asset}
-	return dependency.Locks{SingBox: dependency.Core{Version: "1", Assets: assets}, Xray: dependency.Core{Version: "1", Assets: assets}, Realm: dependency.Core{Version: "1", Assets: assets}, ACME: dependency.Script{Commit: "0123456789abcdef0123456789abcdef01234567", URL: address, SHA256: checksum}}
+	return dependency.Locks{SingBox: dependency.Core{Version: "1", Assets: assets}, Xray: dependency.Core{Version: "1", Assets: assets}, Realm: dependency.Core{Version: "1", Assets: assets}, Komari: dependency.Core{Version: "1", Assets: assets}, ACME: dependency.Script{Commit: "0123456789abcdef0123456789abcdef01234567", URL: address, SHA256: checksum}}
 }

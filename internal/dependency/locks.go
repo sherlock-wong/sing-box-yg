@@ -17,6 +17,7 @@ type Locks struct {
 	SingBox        Core   `json:"sing_box"`
 	Xray           Core   `json:"xray"`
 	Realm          Core   `json:"realm"`
+	Komari         Core   `json:"komari"`
 	ACME           Script `json:"acme"`
 	ACMECloudflare Script `json:"acme_cloudflare"`
 }
@@ -51,7 +52,7 @@ func (locks Locks) Validate() error {
 	for _, item := range []struct {
 		name string
 		core Core
-	}{{"sing-box", locks.SingBox}, {"xray", locks.Xray}, {"realm", locks.Realm}} {
+	}{{"sing-box", locks.SingBox}, {"xray", locks.Xray}, {"realm", locks.Realm}, {"komari", locks.Komari}} {
 		if item.core.Version == "" {
 			return fmt.Errorf("%s lock has no version", item.name)
 		}
@@ -93,6 +94,8 @@ func (locks Locks) Asset(name, architecture string) (Core, Asset, error) {
 		core = locks.Xray
 	case "realm":
 		core = locks.Realm
+	case "komari":
+		core = locks.Komari
 	default:
 		return Core{}, Asset{}, fmt.Errorf("unknown core %q", name)
 	}
@@ -112,8 +115,14 @@ func (asset Asset) validate() error {
 	if err != nil || len(digest) != sha256.Size {
 		return fmt.Errorf("SHA-256 must be 64 hexadecimal characters")
 	}
-	if asset.Archive != "tar.gz" && asset.Archive != "zip" {
+	if asset.Archive != "tar.gz" && asset.Archive != "zip" && asset.Archive != "raw" {
 		return fmt.Errorf("unsupported archive %q", asset.Archive)
+	}
+	if asset.Archive == "raw" {
+		if asset.Member != "" {
+			return fmt.Errorf("raw asset must not specify an archive member")
+		}
+		return nil
 	}
 	if asset.Member == "" || path.IsAbs(asset.Member) || path.Clean(asset.Member) != asset.Member || path.Clean(asset.Member) == "." {
 		return fmt.Errorf("unsafe archive member")

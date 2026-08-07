@@ -37,6 +37,12 @@ VPNM 不兼容或迁移旧证书目录；服务使用的证书路径必须严格
 
 先执行 `vm realm install`，再从菜单添加规则。Realm 状态位于 `/etc/vps-net-manager/realm.json`，每条规则同时转发 TCP 与 UDP。规则替换会预开放 UFW、原子替换状态/TOML、重启服务，失败则回滚。
 
+## Web 服务、Nginx 与 Komari
+
+主菜单的“Web 服务与反向代理”提供独立的 Nginx 安装项，以及通用 HTTPS 反向代理管理。VPNM 只写入自己的 `/etc/nginx/conf.d/vps-net-manager.conf`，不会覆盖其他 Nginx 站点；每条规则可分别指定域名、Nginx HTTPS 监听端口、内部目标地址和端口。新增或更改规则时会从证书库自动匹配覆盖该域名的证书；无匹配证书时可在同一流程选择 ACME 申请或固定自签测试证书。规则会先通过 `nginx -t`，并仅为受管 HTTPS 端口添加 VPNM 标记的 UFW TCP 规则。
+
+Komari 是第一个受管 Web 服务。选择“直接用 IP:端口访问”时，Komari 监听 `0.0.0.0`，VPNM 仅开放这个 TCP 端口，不需要 Nginx；选择“域名 HTTPS 反向代理”时，Komari 仅监听 `127.0.0.1`，域名、证书、外部 HTTPS 端口与 WebSocket 反代均由上述通用反向代理管理。域名已被受管反代使用时会拒绝重复配置。Komari 菜单的“更新 Komari 程序”只会安装当前 `vm` 内置、已校验的固定版本；先运行 `vm update` 获取包含新锁定版本的管理器，再手动选择该项完成服务更新。
+
 ## BBR
 
 ```bash
@@ -55,4 +61,4 @@ vm bbr restore
 vm uninstall --yes
 ```
 
-卸载仅删除 VPNM 创建的 systemd unit、状态目录、标记 UFW 规则和 `/usr/local/bin/vm`，不会删除不属于 VPNM 的服务或防火墙规则。
+卸载仅删除 VPNM 创建的 systemd unit、状态目录、标记 UFW 规则、专用 Nginx include `/etc/nginx/conf.d/vps-net-manager.conf` 和 `/usr/local/bin/vm`，不会删除不属于 VPNM 的服务或防火墙规则。

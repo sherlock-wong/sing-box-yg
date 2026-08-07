@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sherlock-wong/vps-net-manager/internal/model"
 	"github.com/sherlock-wong/vps-net-manager/internal/platform"
 	"github.com/sherlock-wong/vps-net-manager/internal/protocol"
 )
@@ -46,18 +47,29 @@ func (uninstaller Uninstaller) Uninstall(ctx context.Context) error {
 	if err := firewall.Finalize(ctx, rules, nil); err != nil {
 		return fmt.Errorf("remove VPNM firewall rules: %w", err)
 	}
-	for _, unit := range []string{DefaultSingBoxService, DefaultXrayService, DefaultRealmService, DefaultCertSyncTimer, DefaultCertSyncService} {
+	for _, unit := range []string{DefaultSingBoxService, DefaultXrayService, DefaultRealmService, DefaultKomariService, DefaultCertSyncTimer, DefaultCertSyncService} {
 		if err := stopDisable(ctx, runner, unit); err != nil {
 			return err
 		}
 	}
-	for _, unit := range []string{DefaultSingBoxService, DefaultXrayService, DefaultRealmService, DefaultCertSyncTimer, DefaultCertSyncService} {
+	for _, unit := range []string{DefaultSingBoxService, DefaultXrayService, DefaultRealmService, DefaultKomariService, DefaultCertSyncTimer, DefaultCertSyncService} {
 		if err := os.Remove(filepath.Join(uninstaller.UnitDirectory, unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove unit %s: %w", unit, err)
 		}
 	}
 	if _, err := runner.Run(ctx, platform.Command{Path: "systemctl", Args: []string{"daemon-reload"}, Timeout: 30 * time.Second}); err != nil {
 		return fmt.Errorf("reload systemd after uninstall: %w", err)
+	}
+	if err := os.Remove(DefaultNginxVPNMConfig); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove VPNM nginx configuration: %w", err)
+	}
+	// This touches only our dedicated include file. A failed Nginx reload does
+	// not restore it, because retaining a stale HTTPS endpoint after uninstall
+	// is worse than leaving the administrator a clear reload error.
+	if _, err := runner.Run(ctx, platform.Command{Path: "nginx", Args: []string{"-t"}, Timeout: 30 * time.Second}); err == nil {
+		if _, err := runner.Run(ctx, platform.Command{Path: "systemctl", Args: []string{"reload", "nginx"}, Timeout: 45 * time.Second}); err != nil {
+			return fmt.Errorf("reload nginx after uninstall: %w", err)
+		}
 	}
 	if err := os.RemoveAll(uninstaller.StateDirectory); err != nil {
 		return fmt.Errorf("remove VPNM state directory: %w", err)
@@ -70,6 +82,7 @@ func (uninstaller Uninstaller) Uninstall(ctx context.Context) error {
 
 func (uninstaller Uninstaller) rules() ([]protocol.FirewallRule, error) {
 	unique := make(map[string]protocol.FirewallRule)
+	certificates := make(map[string]model.Certificate)
 	statePath := filepath.Join(uninstaller.StateDirectory, "state.json")
 	if _, err := os.Stat(statePath); err == nil {
 		state, err := LoadState(statePath)
@@ -83,6 +96,7 @@ func (uninstaller Uninstaller) rules() ([]protocol.FirewallRule, error) {
 		for _, rule := range rules {
 			unique[fmt.Sprintf("%s/%d", rule.Network, rule.Port)] = rule
 		}
+		certificates = state.Certificates
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -93,6 +107,30 @@ func (uninstaller Uninstaller) rules() ([]protocol.FirewallRule, error) {
 			return nil, err
 		}
 		for _, rule := range realmFirewallRules(state) {
+			unique[fmt.Sprintf("%s/%d", rule.Network, rule.Port)] = rule
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	webPath := filepath.Join(uninstaller.StateDirectory, DefaultWebStateFile)
+	if _, err := os.Stat(webPath); err == nil {
+		state, err := LoadWebState(webPath, certificates)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range webFirewallRules(state) {
+			unique[fmt.Sprintf("%s/%d", rule.Network, rule.Port)] = rule
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	komariPath := filepath.Join(uninstaller.StateDirectory, DefaultKomariStateFile)
+	if _, err := os.Stat(komariPath); err == nil {
+		state, err := LoadKomariStateOrEmpty(komariPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range komariFirewallRules(state) {
 			unique[fmt.Sprintf("%s/%d", rule.Network, rule.Port)] = rule
 		}
 	} else if !os.IsNotExist(err) {

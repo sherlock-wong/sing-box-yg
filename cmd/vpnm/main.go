@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -93,8 +94,9 @@ func menu() {
 		fmt.Println("  4. Realm 端口转发")
 		fmt.Println("  5. BBR 管理")
 		fmt.Println("  6. 显示分享链接和二维码")
-		fmt.Println("  7. 证书管理")
-		fmt.Println("  8. 查看原始 JSON 配置")
+		fmt.Println("  7. Web 服务与反向代理")
+		fmt.Println("  8. 证书管理")
+		fmt.Println("  9. 查看原始 JSON 配置")
 		fmt.Println("  0. 退出")
 		fmt.Print("请选择：")
 		if !scanner.Scan() {
@@ -185,12 +187,136 @@ func menu() {
 			}
 		case "7":
 			if os.Geteuid() != 0 {
+				fmt.Fprintln(os.Stderr, "vpnm: Web 服务与反向代理管理必须以 root 运行")
+				continue
+			}
+			webMenu(scanner, stateDirectory)
+		case "8":
+			if os.Geteuid() != 0 {
 				fmt.Fprintln(os.Stderr, "vpnm: 证书管理必须以 root 运行")
 				continue
 			}
 			certificateMenu(scanner, stateDirectory)
-		case "8":
+		case "9":
 			showRawConfiguration(state)
+		case "0":
+			return
+		default:
+			fmt.Println("无效选择。")
+		}
+	}
+}
+
+func webMenu(scanner *bufio.Scanner, stateDirectory string) {
+	for {
+		state, err := app.LoadState(filepath.Join(stateDirectory, "state.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vpnm:", err)
+			return
+		}
+		fmt.Println("\nWeb 服务与反向代理")
+		fmt.Println("  1. 安装 Nginx")
+		fmt.Println("  2. 管理 HTTPS 反向代理")
+		fmt.Println("  3. Komari 监控")
+		fmt.Println("  0. 返回主菜单")
+		fmt.Print("请选择：")
+		if !scanner.Scan() {
+			return
+		}
+		switch strings.TrimSpace(scanner.Text()) {
+		case "1":
+			fmt.Println("将通过系统 APT 安装 Nginx；不会修改已有站点配置。")
+			if err := (app.NginxInstaller{}).Install(context.Background()); err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			fmt.Println("Nginx 已安装。添加反向代理时将只写入 /etc/nginx/conf.d/vps-net-manager.conf。")
+		case "2":
+			if !(app.NginxInstaller{}).Installed(context.Background()) {
+				fmt.Fprintln(os.Stderr, "vpnm: 未安装 Nginx；请先在本菜单选择“1. 安装 Nginx”，再管理 HTTPS 反向代理。")
+				continue
+			}
+			webState, err := app.LoadWebStateOrEmpty(filepath.Join(stateDirectory, app.DefaultWebStateFile), state.Certificates)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			candidateState, candidateWeb, changed, err := ui.EditWeb(context.Background(), scanner, os.Stdout, stateDirectory, state, webState)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			if !changed {
+				continue
+			}
+			if !reflect.DeepEqual(state, candidateState) {
+				if _, err := app.DefaultApplyOptions(stateDirectory, &state).Apply(context.Background(), candidateState); err != nil {
+					fmt.Fprintln(os.Stderr, "vpnm: 保存证书库变更失败：", err)
+					continue
+				}
+			}
+			if err := app.DefaultWebApplyOptions(stateDirectory).Apply(context.Background(), webState, candidateWeb, candidateState.Certificates); err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			fmt.Println("HTTPS 反向代理已成功应用。")
+		case "3":
+			webState, err := app.LoadWebStateOrEmpty(filepath.Join(stateDirectory, app.DefaultWebStateFile), state.Certificates)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			komariState, err := app.LoadKomariStateOrEmpty(filepath.Join(stateDirectory, app.DefaultKomariStateFile))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			candidateState, candidateWeb, candidateKomari, changed, updateRequested, err := ui.EditKomari(context.Background(), scanner, os.Stdout, stateDirectory, state, webState, komariState)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			if changed && candidateKomari.Enabled && candidateKomari.Mode == "domain" && !(app.NginxInstaller{}).Installed(context.Background()) {
+				fmt.Fprintln(os.Stderr, "vpnm: 未安装 Nginx；请先在本菜单选择“1. 安装 Nginx”，再配置域名 HTTPS 方式。")
+				continue
+			}
+			if !changed && !updateRequested {
+				continue
+			}
+			host, err := platform.InspectSupportedHost()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			if _, err := (app.KomariInstaller{StateDirectory: stateDirectory, UnitDirectory: "/etc/systemd/system"}).Install(context.Background(), host.Architecture); err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm: 安装 Komari 失败：", err)
+				continue
+			}
+			if updateRequested {
+				if err := app.RestartKomari(context.Background(), komariState, nil); err != nil {
+					fmt.Fprintln(os.Stderr, "vpnm: Komari 程序已替换，但重启失败：", err)
+					continue
+				}
+				fmt.Println("Komari 已更新到当前管理器锁定版本。")
+				continue
+			}
+			if !reflect.DeepEqual(state, candidateState) {
+				if _, err := app.DefaultApplyOptions(stateDirectory, &state).Apply(context.Background(), candidateState); err != nil {
+					fmt.Fprintln(os.Stderr, "vpnm: 保存证书库变更失败：", err)
+					continue
+				}
+			}
+			if err := app.DefaultKomariApplyOptions(stateDirectory).Apply(context.Background(), komariState, candidateKomari); err != nil {
+				fmt.Fprintln(os.Stderr, "vpnm:", err)
+				continue
+			}
+			if !reflect.DeepEqual(webState, candidateWeb) {
+				if err := app.DefaultWebApplyOptions(stateDirectory).Apply(context.Background(), webState, candidateWeb, candidateState.Certificates); err != nil {
+					fmt.Fprintln(os.Stderr, "vpnm: Komari 已更新，但 Nginx 反向代理未成功应用：", err)
+					continue
+				}
+			}
+			fmt.Println("Komari 已成功应用。首次管理员账号信息请执行：journalctl -u vps-net-manager-komari --no-pager -n 80")
 		case "0":
 			return
 		default:
