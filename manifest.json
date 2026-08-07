@@ -1,0 +1,94 @@
+{
+  "source_commit": "125b7c4476d68e1ade1299431842dd646ae360bf",
+  "built_at": "2026-08-07T15:41:25Z",
+  "binaries": {
+    "amd64": {
+      "name": "vpnm-linux-amd64",
+      "sha256": "88b78d7918bce8d6015d6dfb5719395c9be579b5c31e688631bdb125534bd49a"
+    },
+    "arm64": {
+      "name": "vpnm-linux-arm64",
+      "sha256": "655b72aeac31735f115c4a4ed2a58f6bcbcd031a34f9c4ad7b1ac23b1f408c89"
+    }
+  },
+  "dependencies": {
+    "sing_box": {
+      "version": "1.13.14",
+      "assets": {
+        "amd64": {
+          "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz",
+          "sha256": "f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697",
+          "archive": "tar.gz",
+          "member": "sing-box-1.13.14-linux-amd64/sing-box"
+        },
+        "arm64": {
+          "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-arm64.tar.gz",
+          "sha256": "4742df6a4314e8ecc41736849fca6d73b8f9e91b6e8b06ee794ff17ba180579e",
+          "archive": "tar.gz",
+          "member": "sing-box-1.13.14-linux-arm64/sing-box"
+        }
+      }
+    },
+    "xray": {
+      "version": "26.3.27",
+      "assets": {
+        "amd64": {
+          "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip",
+          "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+          "archive": "zip",
+          "member": "xray"
+        },
+        "arm64": {
+          "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-arm64-v8a.zip",
+          "sha256": "4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c",
+          "archive": "zip",
+          "member": "xray"
+        }
+      }
+    },
+    "realm": {
+      "version": "2.9.4",
+      "assets": {
+        "amd64": {
+          "url": "https://github.com/zhboner/realm/releases/download/v2.9.4/realm-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd",
+          "archive": "tar.gz",
+          "member": "realm"
+        },
+        "arm64": {
+          "url": "https://github.com/zhboner/realm/releases/download/v2.9.4/realm-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99",
+          "archive": "tar.gz",
+          "member": "realm"
+        }
+      }
+    },
+    "komari": {
+      "version": "1.4.2",
+      "assets": {
+        "amd64": {
+          "url": "https://github.com/komari-monitor/komari/releases/download/1.4.2/komari-linux-amd64",
+          "sha256": "cb475f2fea441922416146d20897b11e214c8cdff9e370ee176a4dbcef727fb4",
+          "archive": "raw",
+          "member": ""
+        },
+        "arm64": {
+          "url": "https://github.com/komari-monitor/komari/releases/download/1.4.2/komari-linux-arm64",
+          "sha256": "0066cbc23ff20495b22f7c7a4309b6504cb321444a405296939482ef1ac0f7c3",
+          "archive": "raw",
+          "member": ""
+        }
+      }
+    },
+    "acme": {
+      "commit": "2feb392bd0e3964d9bf68871ae804578d9d5ca80",
+      "url": "https://raw.githubusercontent.com/acmesh-official/acme.sh/2feb392bd0e3964d9bf68871ae804578d9d5ca80/acme.sh",
+      "sha256": "667b963960470aa8d1e8a1f34ebf084cda1ffd66a3cb5125a4129de6a855528f"
+    },
+    "acme_cloudflare": {
+      "commit": "2feb392bd0e3964d9bf68871ae804578d9d5ca80",
+      "url": "https://raw.githubusercontent.com/acmesh-official/acme.sh/2feb392bd0e3964d9bf68871ae804578d9d5ca80/dnsapi/dns_cf.sh",
+      "sha256": "9628ee8238cb3f9cfa1b1a985c0e9593436a3e4f8a9d65a6f775b981be9e76c8"
+    }
+  }
+}
